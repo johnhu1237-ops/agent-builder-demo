@@ -115,3 +115,60 @@ describe("runner event client", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+import { buildCodexCommand } from "../e2b-command";
+import { parseCodexJsonLine, extractSessionIdFromCodexEvent } from "../e2b-events";
+
+describe("e2b command", () => {
+  it("builds first-turn E2B Codex command without leaking secrets in args", () => {
+    const command = buildCodexCommand({
+      modelName: "gpt-5",
+      workspacePath: "/home/user/workspace",
+      finalPath: "/home/user/workspace/final.md",
+      promptPath: "/home/user/workspace/prompt.md",
+      sessionId: null
+    });
+
+    expect(command).toContain("codex --search --ask-for-approval never exec --json");
+    expect(command).toContain("--model 'gpt-5'");
+    expect(command).toContain("--output-last-message '/home/user/workspace/final.md'");
+    expect(command).toContain("-C '/home/user/workspace'");
+    expect(command).toContain("$(cat '/home/user/workspace/prompt.md')");
+    expect(command).not.toContain("sk-test");
+  });
+
+  it("builds resumed E2B Codex command", () => {
+    const command = buildCodexCommand({
+      modelName: "gpt-5",
+      workspacePath: "/home/user/workspace",
+      finalPath: "/home/user/workspace/final.md",
+      promptPath: "/home/user/workspace/prompt.md",
+      sessionId: "codex-session-1"
+    });
+
+    expect(command).toContain("exec resume 'codex-session-1' --json");
+  });
+});
+
+describe("e2b events", () => {
+  it("parses Codex JSONL events into runner task messages", () => {
+    expect(parseCodexJsonLine(JSON.stringify({ type: "session", session_id: "codex-session-1" }))).toEqual({
+      message: { type: "status", tool: "codex", content: "Codex session established", inputJson: null, output: null },
+      sessionId: "codex-session-1"
+    });
+    expect(parseCodexJsonLine(JSON.stringify({ type: "tool_call", tool: "web_search", arguments: { q: "Acme" } }))).toEqual({
+      message: { type: "tool_use", tool: "web_search", content: "Tool call: web_search", inputJson: { q: "Acme" }, output: null },
+      sessionId: null
+    });
+    expect(parseCodexJsonLine("not json")).toEqual({
+      message: { type: "log", tool: "codex", content: "not json", inputJson: null, output: null },
+      sessionId: null
+    });
+  });
+
+  it("extracts session ids from known Codex event variants", () => {
+    expect(extractSessionIdFromCodexEvent({ session_id: "snake" })).toBe("snake");
+    expect(extractSessionIdFromCodexEvent({ sessionId: "camel" })).toBe("camel");
+    expect(extractSessionIdFromCodexEvent({ type: "other" })).toBeNull();
+  });
+});
