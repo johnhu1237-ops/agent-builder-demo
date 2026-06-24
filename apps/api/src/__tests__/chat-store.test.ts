@@ -1037,4 +1037,40 @@ describe("PgChatStore", () => {
       ])
     ).rejects.toThrow("Cannot append task messages to terminal task");
   });
+
+  it("does not persist a fresh sandbox id with an old Codex session id after workspace loss", async () => {
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Pointer safety"
+    });
+    await store.updateChatSessionResumePointers(session.id, {
+      sessionId: "codex-session-old",
+      workDir: "sandbox-old"
+    });
+    const trigger = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Continue.",
+      taskId: null
+    });
+    const task = await store.createAgentTask({
+      chatSessionId: session.id,
+      triggerMessageId: trigger.id,
+      agentSpec: defaultAgentSpec
+    });
+    await store.markAgentTaskRunning(task.id);
+
+    await store.completeAgentTask(task.id, {
+      status: "completed",
+      resultMarkdown: "Recovered without a new session id",
+      rawOutputRedacted: "workspace lost",
+      sessionId: null,
+      workDir: "sandbox-fresh",
+      taskMessages: [{ type: "error", tool: "e2b", content: "Workspace lost", inputJson: null, output: null }]
+    });
+
+    const detail = await store.getChatSessionDetail(session.id);
+    expect(detail?.sessionId).toBe("codex-session-old");
+    expect(detail?.workDir).toBe("sandbox-old");
+  });
 });

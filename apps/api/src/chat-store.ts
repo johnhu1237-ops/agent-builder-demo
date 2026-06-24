@@ -157,6 +157,10 @@ function redactTaskMessage(message: RunnerTaskMessage): RunnerTaskMessage {
   };
 }
 
+function shouldUpdateResumePointerPair(input: { sessionId: string | null; workDir: string | null }): boolean {
+  return Boolean(input.sessionId?.trim() && input.workDir?.trim());
+}
+
 function hasNonEmptyText(value: string | null): value is string {
   return value != null && value.trim().length > 0;
 }
@@ -267,16 +271,22 @@ async function fillTerminalTaskMetadata(
   }
 
   if (nextSessionId !== currentTask.session_id || nextWorkDir !== currentTask.work_dir) {
-    await db.query(
-      `
-        update chat_session
-        set session_id = coalesce($2, session_id),
-            work_dir = coalesce($3, work_dir),
-            updated_at = now()
-        where id = $1
-      `,
-      [currentTask.chat_session_id, nextSessionId, nextWorkDir]
-    );
+    const shouldUpdatePointers = shouldUpdateResumePointerPair({
+      sessionId: nextSessionId,
+      workDir: nextWorkDir
+    });
+    if (shouldUpdatePointers) {
+      await db.query(
+        `
+          update chat_session
+          set session_id = $2,
+              work_dir = $3,
+              updated_at = now()
+          where id = $1
+        `,
+        [currentTask.chat_session_id, nextSessionId, nextWorkDir]
+      );
+    }
   }
 
   return taskRow;
@@ -705,15 +715,19 @@ export class PgChatStore {
         `,
         [nanoid(), taskRow.chat_session_id, redactedResultMarkdown, taskId]
       );
+      const shouldUpdatePointers = shouldUpdateResumePointerPair({
+        sessionId: input.sessionId,
+        workDir: input.workDir
+      });
       await client.query(
         `
           update chat_session
-          set session_id = coalesce($2, session_id),
-              work_dir = coalesce($3, work_dir),
+          set session_id = case when $2 then $3 else session_id end,
+              work_dir = case when $2 then $4 else work_dir end,
               updated_at = now()
           where id = $1
         `,
-        [taskRow.chat_session_id, input.sessionId, input.workDir]
+        [taskRow.chat_session_id, shouldUpdatePointers, input.sessionId, input.workDir]
       );
       await client.query("commit");
       return mapAgentTask(taskRow);
@@ -774,15 +788,19 @@ export class PgChatStore {
       }
 
       await insertTaskMessages(client, taskId, input.taskMessages);
+      const shouldUpdatePointers = shouldUpdateResumePointerPair({
+        sessionId: input.sessionId,
+        workDir: input.workDir
+      });
       await client.query(
         `
           update chat_session
-          set session_id = coalesce($2, session_id),
-              work_dir = coalesce($3, work_dir),
+          set session_id = case when $2 then $3 else session_id end,
+              work_dir = case when $2 then $4 else work_dir end,
               updated_at = now()
           where id = $1
         `,
-        [taskRow.chat_session_id, input.sessionId, input.workDir]
+        [taskRow.chat_session_id, shouldUpdatePointers, input.sessionId, input.workDir]
       );
       await client.query("commit");
       return mapAgentTask(taskRow);
@@ -801,11 +819,15 @@ export class PgChatStore {
       workDir: string | null;
     }
   ): Promise<void> {
+    const shouldUpdatePointers = shouldUpdateResumePointerPair(input);
+    if (!shouldUpdatePointers) {
+      return;
+    }
     await this.pool.query(
       `
         update chat_session
-        set session_id = coalesce($2, session_id),
-            work_dir = coalesce($3, work_dir),
+        set session_id = $2,
+            work_dir = $3,
             updated_at = now()
         where id = $1
       `,
