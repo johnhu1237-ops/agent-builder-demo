@@ -115,6 +115,148 @@ describe("PgChatStore", () => {
     expect(rerunTasks.rows.map((row) => row.id)).toEqual(["task-completed-late"]);
   });
 
+  it("preserves duplicate resume metadata and task messages on the canonical task during migration repair", async () => {
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Duplicate preservation session"
+    });
+    const triggerMessage = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Resume this task.",
+      taskId: null
+    });
+
+    await pool.query("drop index if exists uq_agent_tasks_trigger_message_id");
+
+    await pool.query(
+      `
+        insert into agent_tasks (
+          id,
+          chat_session_id,
+          trigger_message_id,
+          agent_spec_snapshot,
+          status,
+          session_id,
+          work_dir,
+          result_markdown,
+          started_at,
+          completed_at,
+          created_at
+        )
+        values
+          (
+            'task-canonical',
+            $1,
+            $2,
+            $3,
+            'completed',
+            null,
+            null,
+            '# Richer result',
+            null,
+            null,
+            '2026-01-01T00:00:01Z'
+          ),
+          (
+            'task-duplicate',
+            $1,
+            $2,
+            $3,
+            'running',
+            'codex-session-123',
+            '/tmp/duplicate-worktree',
+            null,
+            '2026-01-01T00:00:02Z',
+            '2026-01-01T00:05:00Z',
+            '2026-01-01T00:00:00Z'
+          )
+      `,
+      [session.id, triggerMessage.id, defaultAgentSpec]
+    );
+
+    await pool.query(
+      `
+        insert into task_message (id, task_id, seq, type, tool, content, created_at)
+        values
+          ('canonical-msg-0', 'task-canonical', 0, 'status', null, 'canonical message', '2026-01-01T00:00:03Z'),
+          ('duplicate-msg-1', 'task-duplicate', 0, 'text', null, 'duplicate first', '2026-01-01T00:00:04Z'),
+          ('duplicate-msg-2', 'task-duplicate', 1, 'tool_result', 'fetch', 'duplicate second', '2026-01-01T00:00:05Z')
+      `
+    );
+
+    await pool.query("update chat_message set task_id = $2 where id = $1", [triggerMessage.id, "task-duplicate"]);
+
+    await expect(runChatMigrations(pool)).resolves.toBeUndefined();
+
+    const repairedTasks = await pool.query<{
+      id: string;
+      status: string;
+      session_id: string | null;
+      work_dir: string | null;
+      result_markdown: string | null;
+      started_at: Date | string | null;
+      completed_at: Date | string | null;
+    }>(
+      `
+        select id, status, session_id, work_dir, result_markdown, started_at, completed_at
+        from agent_tasks
+        where trigger_message_id = $1
+      `,
+      [triggerMessage.id]
+    );
+    const repairedTaskMessages = await pool.query<{
+      task_id: string;
+      seq: number;
+      content: string;
+    }>(
+      `
+        select task_id, seq, content
+        from task_message
+        where task_id = 'task-canonical'
+        order by seq asc, created_at asc, id asc
+      `
+    );
+    const duplicateTaskMessages = await pool.query<{ count: string }>(
+      `
+        select count(*)::text as count
+        from task_message
+        where task_id = 'task-duplicate'
+      `
+    );
+
+    expect(repairedTasks.rows).toEqual([
+      {
+        id: "task-canonical",
+        status: "completed",
+        session_id: "codex-session-123",
+        work_dir: "/tmp/duplicate-worktree",
+        result_markdown: "# Richer result",
+        started_at: new Date("2026-01-01T00:00:02Z"),
+        completed_at: new Date("2026-01-01T00:05:00Z")
+      }
+    ]);
+    expect(repairedTaskMessages.rows).toEqual([
+      { task_id: "task-canonical", seq: 0, content: "canonical message" },
+      { task_id: "task-canonical", seq: 1, content: "duplicate first" },
+      { task_id: "task-canonical", seq: 2, content: "duplicate second" }
+    ]);
+    expect(duplicateTaskMessages.rows[0]?.count).toBe("0");
+
+    await expect(runChatMigrations(pool)).resolves.toBeUndefined();
+
+    const rerunDetail = await store.getChatSessionDetail(session.id);
+
+    expect(rerunDetail?.latestTask?.id).toBe("task-canonical");
+    expect(rerunDetail?.latestTask?.sessionId).toBe("codex-session-123");
+    expect(rerunDetail?.latestTask?.workDir).toBe("/tmp/duplicate-worktree");
+    expect(rerunDetail?.taskMessages.map((message) => [message.seq, message.content])).toEqual([
+      [0, "canonical message"],
+      [1, "duplicate first"],
+      [2, "duplicate second"]
+    ]);
+  });
+
   it("repoints every chat message linked to a deleted duplicate task during migration repair", async () => {
     const session = await store.createChatSession({
       agentSpec: defaultAgentSpec,

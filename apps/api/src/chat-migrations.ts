@@ -106,15 +106,22 @@ async function createIndexIfNeeded(db: Queryable, indexName: string, sql: string
   }
 }
 
+function hasNonEmptyText(value: string | null): value is string {
+  return value != null && value.trim().length > 0;
+}
+
 async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
   const taskResult = await db.query<{
     id: string;
     chat_session_id: string;
     trigger_message_id: string;
     status: string;
+    session_id: string | null;
+    work_dir: string | null;
     result_markdown: string | null;
     raw_output_redacted: string | null;
     error: string | null;
+    started_at: Date | string | null;
     completed_at: Date | string | null;
     created_at: Date | string;
     created_order: string | number | null;
@@ -124,9 +131,12 @@ async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
       chat_session_id,
       trigger_message_id,
       status,
+      session_id,
+      work_dir,
       result_markdown,
       raw_output_redacted,
       error,
+      started_at,
       completed_at,
       created_at,
       created_order
@@ -136,12 +146,12 @@ async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
 
   type AgentTaskRepairRow = (typeof taskResult.rows)[number];
   const triggerKey = (row: AgentTaskRepairRow): string => `${row.chat_session_id}:${row.trigger_message_id}`;
+  const taskRowById = new Map(taskResult.rows.map((row) => [row.id, row]));
 
   const taskPriority = (row: AgentTaskRepairRow): number => {
-    const hasResultMarkdown = row.result_markdown != null && row.result_markdown.trim().length > 0;
+    const hasResultMarkdown = hasNonEmptyText(row.result_markdown);
     const hasFailureDetails =
-      (row.error != null && row.error.trim().length > 0) ||
-      (row.raw_output_redacted != null && row.raw_output_redacted.trim().length > 0);
+      hasNonEmptyText(row.error) || hasNonEmptyText(row.raw_output_redacted);
 
     if (row.status === "completed" && hasResultMarkdown) {
       return 1;
@@ -236,6 +246,68 @@ async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
       continue;
     }
 
+    const mergedTask = duplicateTaskIds.reduce<AgentTaskRepairRow>((current, duplicateTaskId) => {
+      const duplicateTask = taskRowById.get(duplicateTaskId);
+      if (duplicateTask == null) {
+        return current;
+      }
+
+      return {
+        ...current,
+        session_id: hasNonEmptyText(current.session_id)
+          ? current.session_id
+          : hasNonEmptyText(duplicateTask.session_id)
+            ? duplicateTask.session_id
+            : current.session_id,
+        work_dir: hasNonEmptyText(current.work_dir)
+          ? current.work_dir
+          : hasNonEmptyText(duplicateTask.work_dir)
+            ? duplicateTask.work_dir
+            : current.work_dir,
+        result_markdown: hasNonEmptyText(current.result_markdown)
+          ? current.result_markdown
+          : hasNonEmptyText(duplicateTask.result_markdown)
+            ? duplicateTask.result_markdown
+            : current.result_markdown,
+        raw_output_redacted: hasNonEmptyText(current.raw_output_redacted)
+          ? current.raw_output_redacted
+          : hasNonEmptyText(duplicateTask.raw_output_redacted)
+            ? duplicateTask.raw_output_redacted
+            : current.raw_output_redacted,
+        error: hasNonEmptyText(current.error)
+          ? current.error
+          : hasNonEmptyText(duplicateTask.error)
+            ? duplicateTask.error
+            : current.error,
+        started_at: current.started_at ?? duplicateTask.started_at,
+        completed_at: current.completed_at ?? duplicateTask.completed_at
+      };
+    }, canonicalTask);
+
+    await db.query(
+      `
+        update agent_tasks
+        set session_id = $2,
+            work_dir = $3,
+            result_markdown = $4,
+            raw_output_redacted = $5,
+            error = $6,
+            started_at = $7,
+            completed_at = $8
+        where id = $1
+      `,
+      [
+        canonicalTask.id,
+        mergedTask.session_id,
+        mergedTask.work_dir,
+        mergedTask.result_markdown,
+        mergedTask.raw_output_redacted,
+        mergedTask.error,
+        mergedTask.started_at,
+        mergedTask.completed_at
+      ]
+    );
+
     await db.query(
       `
         update chat_message
@@ -244,9 +316,40 @@ async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
       `,
       [duplicateTaskIds, canonicalTask.id]
     );
+
+    const maxSeqResult = await db.query<{ max_seq: number | null }>(
+      `
+        select max(seq) as max_seq
+        from task_message
+        where task_id = $1
+      `,
+      [canonicalTask.id]
+    );
+    const duplicateTaskMessages = await db.query<{ id: string }>(
+      `
+        select id
+        from task_message
+        where task_id = any($1::text[])
+        order by seq asc, created_at asc, id asc
+      `,
+      [duplicateTaskIds]
+    );
+
+    let nextSeq = (maxSeqResult.rows[0]?.max_seq ?? -1) + 1;
+    for (const taskMessage of duplicateTaskMessages.rows) {
+      await db.query(
+        `
+          update task_message
+          set task_id = $2,
+              seq = $3
+          where id = $1
+        `,
+        [taskMessage.id, canonicalTask.id, nextSeq]
+      );
+      nextSeq += 1;
+    }
   }
 
-  // v0.1.1 accepts deleting duplicate task rows because task_message cascades with the task.
   for (const duplicateTaskIds of duplicateTaskIdsByTriggerKey.values()) {
     for (const duplicateTaskId of duplicateTaskIds) {
       await db.query("delete from agent_tasks where id = $1", [duplicateTaskId]);
