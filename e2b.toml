@@ -1,0 +1,2 @@
+template_id = "agent-builder-codex-runner"
+dockerfile = "e2b.Dockerfile"
