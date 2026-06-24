@@ -93,14 +93,16 @@ describe("API orchestrator", () => {
       .expect(201);
 
     expect(runAgentTask).toHaveBeenCalledTimes(1);
-    expect(runAgentTask).toHaveBeenCalledWith({
-      chatSessionId: sessionResponse.body.id,
-      message: "Use sk-test to inspect Acme.",
-      agentSpec: defaultAgentSpec,
-      runtimeSecrets: { apiKey: "sk-test" },
-      sessionId: null,
-      workDir: null
-    });
+    expect(runAgentTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatSessionId: sessionResponse.body.id,
+        message: "Use sk-test to inspect Acme.",
+        agentSpec: defaultAgentSpec,
+        runtimeSecrets: { apiKey: "sk-test" },
+        sessionId: null,
+        workDir: null
+      })
+    );
 
     expect(messageResponse.body.messages).toHaveLength(2);
     expect(messageResponse.body.messages[0].role).toBe("user");
@@ -198,5 +200,87 @@ describe("API orchestrator", () => {
       .expect(400);
 
     expect(response.body.error).toBe("API key is required");
+  });
+
+  it("passes task id and runner event target to the runner", async () => {
+    process.env.RUNNER_EVENT_TOKEN = "runner-token";
+    process.env.API_PUBLIC_BASE_URL = "http://api.internal:4001";
+    const runAgentTask = vi.fn().mockResolvedValue({
+      status: "completed",
+      finalMarkdown: "Done",
+      rawOutputRedacted: "",
+      sessionId: "runner-session-1",
+      workDir: "sandbox-1",
+      taskMessages: []
+    } satisfies RunnerAgentTaskResponse);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentSpec: defaultAgentSpec, title: "Runner event target" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({
+        agentSpec: defaultAgentSpec,
+        message: "Run with events.",
+        runtimeSecrets: { apiKey: "sk-test" }
+      })
+      .expect(201);
+
+    expect(runAgentTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: expect.any(String),
+        runnerEvents: {
+          endpoint: "http://api.internal:4001/internal/runner/task-events",
+          token: "runner-token"
+        }
+      })
+    );
+  });
+
+  it("authenticates and persists internal runner task events", async () => {
+    process.env.RUNNER_EVENT_TOKEN = "runner-token";
+    const app = createApiApp({ chatStore: store });
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Internal event ingest"
+    });
+    const trigger = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Run task.",
+      taskId: null
+    });
+    const task = await store.createAgentTask({
+      chatSessionId: session.id,
+      triggerMessageId: trigger.id,
+      agentSpec: defaultAgentSpec
+    });
+    await store.markAgentTaskRunning(task.id);
+
+    await request(app)
+      .post("/internal/runner/task-events")
+      .set("authorization", "Bearer runner-token")
+      .send({
+        taskId: task.id,
+        secretValues: ["sk-test"],
+        messages: [{ type: "status", tool: null, content: "streamed sk-test", inputJson: null, output: null }]
+      })
+      .expect(202);
+
+    await request(app)
+      .post("/internal/runner/task-events")
+      .set("authorization", "Bearer wrong-token")
+      .send({
+        taskId: task.id,
+        messages: [{ type: "status", tool: null, content: "rejected", inputJson: null, output: null }]
+      })
+      .expect(401);
+
+    const detail = await store.getChatSessionDetail(session.id);
+    expect(detail?.taskMessages).toHaveLength(1);
+    expect(detail?.taskMessages[0].content).toBe("streamed [REDACTED]");
   });
 });

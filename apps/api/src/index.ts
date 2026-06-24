@@ -6,8 +6,10 @@ import {
   exportAgentSpec,
   validateAgentSpec,
   type AgentSpec,
-  type AgentTaskStatus
+  type AgentTaskStatus,
+  type RunnerTaskEventRequest
 } from "@agent-builder/shared";
+import { getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
 import { runChatMigrations } from "./chat-migrations";
 import { PgChatStore } from "./chat-store";
 import { redactSecrets } from "./redaction";
@@ -135,11 +137,18 @@ export function createApiApp(deps: ApiDependencies = {}) {
     try {
       const result = await runnerClient.runAgentTask({
         chatSessionId: detail.id,
+        taskId: task.id,
         message,
         agentSpec: validation.data,
         runtimeSecrets: { apiKey },
         sessionId: detail.sessionId,
-        workDir: detail.workDir
+        workDir: detail.workDir,
+        runnerEvents: getRunnerEventToken()
+          ? {
+              endpoint: runnerEventEndpoint(),
+              token: getRunnerEventToken()!
+            }
+          : null
       });
       if (result.status === "completed" && result.finalMarkdown.trim()) {
         await chatStore.completeAgentTask(task.id, {
@@ -199,6 +208,27 @@ export function createApiApp(deps: ApiDependencies = {}) {
 
   app.get("/api/agent-tasks/:id", async (_req, res) => {
     res.status(501).json(stableError("Use GET /api/chat-sessions/:id for v0.1.1 task details"));
+  });
+
+  app.post("/internal/runner/task-events", async (req, res) => {
+    if (!requireRunnerEventAuth(req)) {
+      res.status(401).json(stableError("Unauthorized runner event request"));
+      return;
+    }
+
+    const body = req.body as RunnerTaskEventRequest;
+    if (!body.taskId?.trim() || !Array.isArray(body.messages)) {
+      res.status(400).json(stableError("taskId and messages are required"));
+      return;
+    }
+
+    try {
+      await chatStore.appendRunnerTaskMessages(body.taskId, body.messages, body.secretValues ?? []);
+      res.status(202).json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to append runner task events";
+      res.status(message.includes("terminal task") ? 409 : 404).json(stableError(message));
+    }
   });
 
   return app;
