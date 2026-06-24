@@ -747,7 +747,7 @@ describe("PgChatStore", () => {
     expect(rerunTask?.completedAt).toBe(completedTask.completedAt);
   });
 
-  it("keeps the first terminal completion and avoids duplicate messages on duplicate callbacks", async () => {
+  it("fills missing terminal completion metadata from duplicate callbacks without duplicating messages", async () => {
     const session = await store.createChatSession({ agentSpec: defaultAgentSpec, title: "Research Agent" });
     const userMessage = await store.createChatMessage({
       chatSessionId: session.id,
@@ -764,9 +764,9 @@ describe("PgChatStore", () => {
     const firstCompletion = await store.completeAgentTask(task.id, {
       status: "completed",
       resultMarkdown: "First result",
-      rawOutputRedacted: "first raw output",
-      sessionId: "codex-session-1",
-      workDir: "/tmp/agent-task",
+      rawOutputRedacted: "",
+      sessionId: null,
+      workDir: null,
       taskMessages: [
         { type: "status", tool: null, content: "started", inputJson: null, output: null },
         { type: "status", tool: null, content: "done", inputJson: null, output: null }
@@ -776,7 +776,7 @@ describe("PgChatStore", () => {
     const duplicateCompletion = await store.completeAgentTask(task.id, {
       status: "completed",
       resultMarkdown: "Second result",
-      rawOutputRedacted: "second raw output",
+      rawOutputRedacted: "OPENAI_API_KEY=sk-test-secret",
       sessionId: "codex-session-2",
       workDir: "/tmp/agent-task-2",
       taskMessages: [{ type: "status", tool: null, content: "duplicate", inputJson: null, output: null }]
@@ -784,12 +784,17 @@ describe("PgChatStore", () => {
 
     const detail = await store.getChatSessionDetail(session.id);
 
-    expect(duplicateCompletion).toEqual(firstCompletion);
+    expect(duplicateCompletion).toMatchObject({
+      ...firstCompletion,
+      rawOutputRedacted: "OPENAI_API_KEY=[REDACTED]",
+      sessionId: "codex-session-2",
+      workDir: "/tmp/agent-task-2"
+    });
     expect(detail?.latestTask?.status).toBe("completed");
     expect(detail?.latestTask?.resultMarkdown).toBe("First result");
-    expect(detail?.latestTask?.rawOutputRedacted).toBe("first raw output");
-    expect(detail?.latestTask?.sessionId).toBe("codex-session-1");
-    expect(detail?.latestTask?.workDir).toBe("/tmp/agent-task");
+    expect(detail?.latestTask?.rawOutputRedacted).toBe("OPENAI_API_KEY=[REDACTED]");
+    expect(detail?.latestTask?.sessionId).toBe("codex-session-2");
+    expect(detail?.latestTask?.workDir).toBe("/tmp/agent-task-2");
     expect(detail?.messages).toHaveLength(2);
     expect(detail?.messages[1]).toMatchObject({
       role: "assistant",
@@ -799,7 +804,7 @@ describe("PgChatStore", () => {
     expect(detail?.taskMessages.map((message) => message.content)).toEqual(["started", "done"]);
   });
 
-  it("keeps the first terminal failure and avoids duplicate task messages on duplicate callbacks", async () => {
+  it("fills missing terminal failure metadata from duplicate callbacks without duplicating task messages", async () => {
     const session = await store.createChatSession({ agentSpec: defaultAgentSpec, title: "Research Agent" });
     const userMessage = await store.createChatMessage({
       chatSessionId: session.id,
@@ -816,16 +821,16 @@ describe("PgChatStore", () => {
     const firstFailure = await store.failAgentTask(task.id, {
       status: "failed",
       error: "First error",
-      rawOutputRedacted: "first raw output",
-      sessionId: "codex-session-1",
-      workDir: "/tmp/agent-task",
+      rawOutputRedacted: "",
+      sessionId: null,
+      workDir: null,
       taskMessages: [{ type: "error", tool: null, content: "first failure", inputJson: null, output: null }]
     });
 
     const duplicateFailure = await store.failAgentTask(task.id, {
       status: "timed_out",
-      error: "Second error",
-      rawOutputRedacted: "second raw output",
+      error: "apiKey: sk-test-secret",
+      rawOutputRedacted: "OPENAI_API_KEY=sk-test-secret",
       sessionId: "codex-session-2",
       workDir: "/tmp/agent-task-2",
       taskMessages: [{ type: "error", tool: null, content: "duplicate failure", inputJson: null, output: null }]
@@ -833,12 +838,17 @@ describe("PgChatStore", () => {
 
     const detail = await store.getChatSessionDetail(session.id);
 
-    expect(duplicateFailure).toEqual(firstFailure);
+    expect(duplicateFailure).toMatchObject({
+      ...firstFailure,
+      rawOutputRedacted: "OPENAI_API_KEY=[REDACTED]",
+      sessionId: "codex-session-2",
+      workDir: "/tmp/agent-task-2"
+    });
     expect(detail?.latestTask?.status).toBe("failed");
     expect(detail?.latestTask?.error).toBe("First error");
-    expect(detail?.latestTask?.rawOutputRedacted).toBe("first raw output");
-    expect(detail?.latestTask?.sessionId).toBe("codex-session-1");
-    expect(detail?.latestTask?.workDir).toBe("/tmp/agent-task");
+    expect(detail?.latestTask?.rawOutputRedacted).toBe("OPENAI_API_KEY=[REDACTED]");
+    expect(detail?.latestTask?.sessionId).toBe("codex-session-2");
+    expect(detail?.latestTask?.workDir).toBe("/tmp/agent-task-2");
     expect(detail?.messages).toHaveLength(1);
     expect(detail?.taskMessages.map((message) => message.content)).toEqual(["first failure"]);
   });

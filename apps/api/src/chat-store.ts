@@ -157,6 +157,17 @@ function redactTaskMessage(message: RunnerTaskMessage): RunnerTaskMessage {
   };
 }
 
+function hasNonEmptyText(value: string | null): value is string {
+  return value != null && value.trim().length > 0;
+}
+
+function pickMissingText(current: string | null, incoming: string | null): string | null {
+  if (hasNonEmptyText(current)) {
+    return current;
+  }
+  return hasNonEmptyText(incoming) ? incoming : current;
+}
+
 async function insertTaskMessages(db: Queryable, taskId: string, messages: RunnerTaskMessage[]): Promise<void> {
   for (const [index, message] of messages.entries()) {
     const sanitizedMessage = redactTaskMessage(message);
@@ -203,6 +214,72 @@ async function getTaskById(db: Queryable, taskId: string): Promise<AgentTaskRow 
   );
 
   return result.rows[0] ?? null;
+}
+
+async function fillTerminalTaskMetadata(
+  db: Queryable,
+  currentTask: AgentTaskRow,
+  input: {
+    sessionId: string | null;
+    workDir: string | null;
+    rawOutputRedacted: string | null;
+    resultMarkdown?: string | null;
+    error?: string | null;
+  }
+): Promise<AgentTaskRow> {
+  const nextSessionId = pickMissingText(currentTask.session_id, input.sessionId);
+  const nextWorkDir = pickMissingText(currentTask.work_dir, input.workDir);
+  const nextRawOutput = pickMissingText(currentTask.raw_output_redacted, input.rawOutputRedacted);
+  const nextResultMarkdown =
+    currentTask.status === "completed"
+      ? pickMissingText(currentTask.result_markdown, input.resultMarkdown ?? null)
+      : currentTask.result_markdown;
+  const nextError =
+    currentTask.status === "failed" || currentTask.status === "timed_out"
+      ? pickMissingText(currentTask.error, input.error ?? null)
+      : currentTask.error;
+
+  const shouldUpdateTask =
+    nextSessionId !== currentTask.session_id ||
+    nextWorkDir !== currentTask.work_dir ||
+    nextRawOutput !== currentTask.raw_output_redacted ||
+    nextResultMarkdown !== currentTask.result_markdown ||
+    nextError !== currentTask.error;
+
+  let taskRow = currentTask;
+
+  if (shouldUpdateTask) {
+    const updatedTask = await db.query<AgentTaskRow>(
+      `
+        update agent_tasks
+        set session_id = $2,
+            work_dir = $3,
+            raw_output_redacted = $4,
+            result_markdown = $5,
+            error = $6
+        where id = $1
+        returning *
+      `,
+      [currentTask.id, nextSessionId, nextWorkDir, nextRawOutput, nextResultMarkdown, nextError]
+    );
+
+    taskRow = updatedTask.rows[0] ?? currentTask;
+  }
+
+  if (nextSessionId !== currentTask.session_id || nextWorkDir !== currentTask.work_dir) {
+    await db.query(
+      `
+        update chat_session
+        set session_id = coalesce($2, session_id),
+            work_dir = coalesce($3, work_dir),
+            updated_at = now()
+        where id = $1
+      `,
+      [currentTask.chat_session_id, nextSessionId, nextWorkDir]
+    );
+  }
+
+  return taskRow;
 }
 
 function missingTriggerMessageError(triggerMessageId: string, chatSessionId: string): Error {
@@ -518,8 +595,14 @@ export class PgChatStore {
         throw new Error(`Agent task not found: ${taskId}`);
       }
       if (isTerminalTaskStatus(currentTask.status)) {
+        const mergedTask = await fillTerminalTaskMetadata(client, currentTask, {
+          sessionId: input.sessionId,
+          workDir: input.workDir,
+          rawOutputRedacted: redactedRawOutput,
+          resultMarkdown: redactedResultMarkdown
+        });
         await client.query("commit");
-        return mapAgentTask(currentTask);
+        return mapAgentTask(mergedTask);
       }
 
       const taskResult = await client.query<AgentTaskRow>(
@@ -589,8 +672,14 @@ export class PgChatStore {
         throw new Error(`Agent task not found: ${taskId}`);
       }
       if (isTerminalTaskStatus(currentTask.status)) {
+        const mergedTask = await fillTerminalTaskMetadata(client, currentTask, {
+          sessionId: input.sessionId,
+          workDir: input.workDir,
+          rawOutputRedacted: redactedRawOutput,
+          error: redactedError
+        });
         await client.query("commit");
-        return mapAgentTask(currentTask);
+        return mapAgentTask(mergedTask);
       }
 
       const taskResult = await client.query<AgentTaskRow>(
