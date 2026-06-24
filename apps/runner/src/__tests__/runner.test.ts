@@ -172,3 +172,76 @@ describe("e2b events", () => {
     expect(extractSessionIdFromCodexEvent({ type: "other" })).toBeNull();
   });
 });
+
+import { createE2BSandboxFactory, resolveSandbox } from "../e2b-sandbox";
+import type { E2BSandboxLike } from "../e2b-types";
+
+function fakeSandbox(id: string): E2BSandboxLike {
+  return {
+    sandboxId: id,
+    commands: {
+      run: async () => ({ stdout: "", stderr: "", exitCode: 0 })
+    },
+    files: {
+      write: async () => undefined,
+      read: async () => "# Done"
+    },
+    pause: async () => undefined,
+    kill: async () => undefined
+  };
+}
+
+describe("e2b sandbox", () => {
+  it("creates a new E2B sandbox when workDir is missing", async () => {
+    const created: string[] = [];
+    const factory = {
+      create: async (templateId: string) => {
+        created.push(templateId);
+        return fakeSandbox("sandbox-new");
+      },
+      connect: async () => {
+        throw new Error("connect should not be called");
+      }
+    };
+
+    const result = await resolveSandbox({ workDir: null, templateId: "template-1", factory });
+
+    expect(result.kind).toBe("created");
+    expect(result.sandbox.sandboxId).toBe("sandbox-new");
+    expect(created).toEqual(["template-1"]);
+  });
+
+  it("resumes an existing E2B sandbox when workDir is present", async () => {
+    const connected: string[] = [];
+    const factory = {
+      create: async () => {
+        throw new Error("create should not be called");
+      },
+      connect: async (sandboxId: string) => {
+        connected.push(sandboxId);
+        return fakeSandbox(sandboxId);
+      }
+    };
+
+    const result = await resolveSandbox({ workDir: "sandbox-existing", templateId: "template-1", factory });
+
+    expect(result.kind).toBe("resumed");
+    expect(result.sandbox.sandboxId).toBe("sandbox-existing");
+    expect(connected).toEqual(["sandbox-existing"]);
+  });
+
+  it("creates a fresh sandbox when resume fails", async () => {
+    const factory = {
+      create: async () => fakeSandbox("sandbox-fresh"),
+      connect: async () => {
+        throw new Error("sandbox not found");
+      }
+    };
+
+    const result = await resolveSandbox({ workDir: "sandbox-lost", templateId: "template-1", factory });
+
+    expect(result.kind).toBe("workspace_lost");
+    expect(result.sandbox.sandboxId).toBe("sandbox-fresh");
+    expect(result.resumeError?.message).toContain("sandbox not found");
+  });
+});
