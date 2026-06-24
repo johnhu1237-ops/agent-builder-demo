@@ -13,7 +13,7 @@ import {
   type RunnerTaskMessage,
   type TaskMessage
 } from "@agent-builder/shared";
-import { redactSecrets } from "./redaction";
+import { redactSecrets, redactUnknownJson } from "./redaction";
 
 type Queryable = Pool | PoolClient;
 
@@ -146,21 +146,6 @@ function mapTaskMessage(row: TaskMessageRow): TaskMessage {
     output: row.output,
     createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString()
   };
-}
-
-function redactUnknownJson(value: unknown): unknown {
-  if (typeof value === "string") {
-    return redactSecrets(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map(redactUnknownJson);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nestedValue]) => [key, redactUnknownJson(nestedValue)])
-    );
-  }
-  return value;
 }
 
 function redactTaskMessage(message: RunnerTaskMessage): RunnerTaskMessage {

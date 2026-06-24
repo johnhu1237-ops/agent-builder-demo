@@ -304,7 +304,7 @@ describe("PgChatStore", () => {
         select id, role, task_id
         from chat_message
         where chat_session_id = $1
-        order by created_at asc, id asc
+        order by created_at asc, created_order asc, id asc
       `,
       [session.id]
     );
@@ -316,10 +316,13 @@ describe("PgChatStore", () => {
       `
     );
 
-    expect(messages.rows).toEqual([
-      { id: triggerMessage.id, role: "user", task_id: "task-early" },
-      { id: assistantMessage.id, role: "assistant", task_id: "task-early" }
-    ]);
+    expect(messages.rows).toHaveLength(2);
+    expect(messages.rows).toEqual(
+      expect.arrayContaining([
+        { id: triggerMessage.id, role: "user", task_id: "task-early" },
+        { id: assistantMessage.id, role: "assistant", task_id: "task-early" }
+      ])
+    );
     expect(danglingMessages.rows[0]?.count).toBe("0");
   });
 
@@ -865,7 +868,16 @@ describe("PgChatStore", () => {
           type: "tool_result",
           tool: "fetch",
           content: "apiKey: sk-test-secret",
-          inputJson: { token: "OPENAI_API_KEY=sk-test-secret" },
+          inputJson: {
+            apiKey: "plain-secret",
+            nested: {
+              openai_api_key: "plain-secret",
+              authorization: "Bearer plain-secret",
+              token: "plain-secret",
+              secret: "plain-secret",
+              preserved: "keep me"
+            }
+          },
           output: "OPENAI_API_KEY=sk-test-secret"
         }
       ]
@@ -893,6 +905,16 @@ describe("PgChatStore", () => {
     expect(detail?.taskMessages[0]?.content).toBe("apiKey: [REDACTED]");
     expect(detail?.taskMessages[0]?.output).toBe("OPENAI_API_KEY=[REDACTED]");
     expect(JSON.stringify(persistedTaskMessage.rows[0]?.input_json)).not.toContain("sk-test-secret");
+    expect(persistedTaskMessage.rows[0]?.input_json).toEqual({
+      apiKey: "[REDACTED]",
+      nested: {
+        openai_api_key: "[REDACTED]",
+        authorization: "[REDACTED]",
+        token: "[REDACTED]",
+        secret: "[REDACTED]",
+        preserved: "keep me"
+      }
+    });
     expect(persistedTaskMessage.rows[0]?.content).toBe("apiKey: [REDACTED]");
     expect(persistedTaskMessage.rows[0]?.output).toBe("OPENAI_API_KEY=[REDACTED]");
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactSecrets } from "../redaction";
+import { redactSecrets, redactUnknownJson } from "../redaction";
 
 describe("redactSecrets", () => {
   it("replaces runtime secrets directly", () => {
@@ -21,5 +21,31 @@ api_key="sk-third-secret"`;
     expect(redacted).not.toContain("sk-secret-value");
     expect(redacted).not.toContain("sk-another-secret");
     expect(redacted).not.toContain("sk-third-secret");
+  });
+
+  it("redacts secret-like json keys recursively even for plain values", () => {
+    const input = {
+      apiKey: "plain-secret",
+      nested: {
+        openai_api_key: "plain-secret",
+        authorization: "Bearer plain-secret",
+        token: "plain-secret",
+        secret: "plain-secret",
+        preserved: "keep me",
+        list: [{ api_key: "plain-secret" }, { note: "still here" }]
+      }
+    };
+
+    expect(redactUnknownJson(input)).toEqual({
+      apiKey: "[REDACTED]",
+      nested: {
+        openai_api_key: "[REDACTED]",
+        authorization: "[REDACTED]",
+        token: "[REDACTED]",
+        secret: "[REDACTED]",
+        preserved: "keep me",
+        list: [{ api_key: "[REDACTED]" }, { note: "still here" }]
+      }
+    });
   });
 });
