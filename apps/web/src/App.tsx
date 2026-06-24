@@ -1,29 +1,43 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   abilityRegistry,
   appRegistry,
   skillRegistry,
   type AgentSpec,
-  type RunRecord
+  type ChatSession,
+  type ChatSessionDetail
 } from "@agent-builder/shared";
-import { createRun } from "./api";
+import { createChatSession, listChatSessions, sendChatMessage } from "./api";
 import { createExportPayload, defaultUiAgentSpec } from "./defaults";
 
-type RunState = "idle" | "running" | "succeeded" | "failed";
+type SendState = "idle" | "sending" | "failed";
 
 export default function App() {
   const [agentSpec, setAgentSpec] = useState<AgentSpec>(defaultUiAgentSpec);
   const [apiKey, setApiKey] = useState("");
-  const [task, setTask] = useState("Research RunwayML and produce a concise company profile.");
-  const [runState, setRunState] = useState<RunState>("idle");
-  const [runRecord, setRunRecord] = useState<RunRecord | null>(null);
+  const [message, setMessage] = useState("Research RunwayML and produce a concise company profile.");
+  const [sendState, setSendState] = useState<SendState>("idle");
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSession, setActiveSession] = useState<ChatSessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const enabledAppCount = useMemo(
     () => agentSpec.apps.filter((app) => app.enabled).length,
     [agentSpec.apps]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    listChatSessions()
+      .then((items) => {
+        if (!cancelled) setSessions(items);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function updateAgent(patch: Partial<AgentSpec>) {
     setAgentSpec((current) => ({ ...current, ...patch }));
@@ -52,28 +66,38 @@ export default function App() {
     }));
   }
 
-  async function runAgent() {
+  async function sendMessage() {
     setError(null);
-    setRunRecord(null);
 
     if (!apiKey.trim()) {
       setError("API key is required");
       return;
     }
 
-    if (!task.trim()) {
-      setError("Task prompt is required");
+    if (!message.trim()) {
+      setError("Message is required");
       return;
     }
 
-    setRunState("running");
+    setSendState("sending");
     try {
-      const run = await createRun({ agentSpec, apiKey, task });
-      setRunRecord(run);
-      setRunState("succeeded");
-    } catch (runError) {
-      setError(runError instanceof Error ? runError.message : "Run failed");
-      setRunState("failed");
+      const session = activeSession ?? (await createChatSession({ agentSpec, title: agentSpec.identity.name }));
+      const detail = await sendChatMessage({
+        chatSessionId: session.id,
+        agentSpec,
+        apiKey,
+        message
+      });
+      setActiveSession(detail);
+      setSessions((current) => {
+        const withoutCurrent = current.filter((item) => item.id !== detail.id);
+        return [detail, ...withoutCurrent];
+      });
+      setMessage("");
+      setSendState("idle");
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Message failed");
+      setSendState("failed");
     }
   }
 
@@ -90,7 +114,7 @@ export default function App() {
           <p className="eyebrow">Agent Builder</p>
           <h1>Research Agent</h1>
         </div>
-        <div className="agent-pill">Single agent skeleton</div>
+        <div className="agent-pill">{sessions.length} chat sessions</div>
       </aside>
 
       <section className="workspace">
@@ -182,10 +206,10 @@ export default function App() {
                   type="password"
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
-                  placeholder="Used for this run only"
+                  placeholder="Used for this message only"
                 />
               </label>
-              <p className="hint">API keys are runtime-only in v0.1 and are not exported.</p>
+              <p className="hint">API keys are runtime-only in v0.1.1 and are not exported or persisted.</p>
             </div>
 
             <div className="section-block">
@@ -235,33 +259,48 @@ export default function App() {
             </div>
           </section>
 
-          <section className="run-surface" aria-label="Run console">
-            <p className="eyebrow">Run Console</p>
+          <section className="run-surface" aria-label="Chat workbench">
+            <div className="workbench-header">
+              <div>
+                <p className="eyebrow">Workbench</p>
+                <h3>Chat with Research Agent</h3>
+              </div>
+              <span className="task-status">
+                {sendState === "sending" ? "Running" : activeSession?.latestTask?.status ?? "Ready"}
+              </span>
+            </div>
+
+            <div className="message-list" aria-label="Messages">
+              {(activeSession?.messages ?? []).map((chatMessage) => (
+                <article className={`message ${chatMessage.role}`} key={chatMessage.id}>
+                  <p className="message-role">{chatMessage.role === "user" ? "You" : agentSpec.identity.name}</p>
+                  <ReactMarkdown>{chatMessage.contentMarkdown}</ReactMarkdown>
+                </article>
+              ))}
+              {!activeSession?.messages.length ? (
+                <p className="hint">Start the conversation with the configured Research Agent.</p>
+              ) : null}
+            </div>
+
             <label>
-              Task prompt
-              <textarea rows={5} value={task} onChange={(event) => setTask(event.target.value)} />
+              Message
+              <textarea rows={5} value={message} onChange={(event) => setMessage(event.target.value)} />
             </label>
-            <button className="button primary" type="button" onClick={runAgent} disabled={runState === "running"}>
-              {runState === "running" ? "Running..." : "Run agent"}
+            <button className="button primary" type="button" onClick={sendMessage} disabled={sendState === "sending"}>
+              {sendState === "sending" ? "Sending..." : "Send"}
             </button>
             {error ? <div className="error-banner">{error}</div> : null}
+
             <div className="trace">
-              <p className="eyebrow">Trace</p>
-              {(runRecord?.traceEvents.length ? runRecord.traceEvents : []).map((event) => (
+              <p className="eyebrow">Task Timeline</p>
+              {(activeSession?.taskMessages ?? []).map((event) => (
                 <div className="trace-item" key={event.id}>
                   <strong>{event.type.replaceAll("_", " ")}</strong>
-                  <span>{event.message}</span>
+                  <span>{event.content}</span>
                 </div>
               ))}
-              {runState === "idle" ? <p className="hint">Run a task to see status events.</p> : null}
+              {!activeSession?.taskMessages.length ? <p className="hint">Task events appear after a message runs.</p> : null}
             </div>
-            <article className="markdown-output">
-              {runRecord?.finalMarkdown ? (
-                <ReactMarkdown>{runRecord.finalMarkdown}</ReactMarkdown>
-              ) : (
-                <p className="hint">Final Markdown output will appear here.</p>
-              )}
-            </article>
           </section>
         </div>
       </section>

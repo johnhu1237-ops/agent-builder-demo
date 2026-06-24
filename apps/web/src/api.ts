@@ -1,4 +1,4 @@
-import type { AgentSpec, RunRecord } from "@agent-builder/shared";
+import type { AgentSpec, ChatSession, ChatSessionDetail } from "@agent-builder/shared";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4001";
 
@@ -31,17 +31,33 @@ export function saveDefaultAgent(agentSpec: AgentSpec): Promise<AgentSpec> {
   });
 }
 
-export function createRun(input: {
+export function listChatSessions(): Promise<ChatSession[]> {
+  return requestJson<ChatSession[]>("/api/chat-sessions");
+}
+
+export function createChatSession(input: { agentSpec: AgentSpec; title?: string }): Promise<ChatSession> {
+  return requestJson<ChatSession>("/api/chat-sessions", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function getChatSession(id: string): Promise<ChatSessionDetail> {
+  return requestJson<ChatSessionDetail>(`/api/chat-sessions/${id}`);
+}
+
+export function sendChatMessage(input: {
+  chatSessionId: string;
   agentSpec: AgentSpec;
   apiKey: string;
-  task: string;
-}): Promise<RunRecord> {
-  return requestJson<RunRecord>("/api/runs", {
+  message: string;
+}): Promise<ChatSessionDetail> {
+  return requestJson<ChatSessionDetail>(`/api/chat-sessions/${input.chatSessionId}/messages`, {
     method: "POST",
     body: JSON.stringify({
       agentSpec: input.agentSpec,
       runtimeSecrets: { apiKey: input.apiKey },
-      task: input.task
+      message: input.message
     })
   });
 }

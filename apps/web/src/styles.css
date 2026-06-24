@@ -252,3 +252,55 @@ textarea:focus {
     border-top: 1px solid #e7eaf0;
   }
 }
+
+.workbench-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.workbench-header h3 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.task-status {
+  border: 1px solid #d8dee8;
+  border-radius: 999px;
+  color: #334155;
+  font-size: 12px;
+  padding: 6px 10px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.message-list {
+  display: grid;
+  gap: 12px;
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.message {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.message.user {
+  background: #f8fafc;
+}
+
+.message.assistant {
+  background: #ffffff;
+}
+
+.message-role {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
