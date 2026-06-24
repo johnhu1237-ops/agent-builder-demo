@@ -12,12 +12,28 @@ import { createChatSession, listChatSessions, sendChatMessage } from "./api";
 import { createExportPayload, defaultUiAgentSpec } from "./defaults";
 
 type SendState = "idle" | "sending" | "failed";
+type ConfigTab = "profile" | "model" | "tools";
+type ToolsTab = "apps" | "skills" | "abilities";
+
+const configTabs: Array<{ id: ConfigTab; label: string }> = [
+  { id: "profile", label: "Profile" },
+  { id: "model", label: "Model" },
+  { id: "tools", label: "Tools" }
+];
+
+const toolsTabs: Array<{ id: ToolsTab; label: string }> = [
+  { id: "apps", label: "Apps" },
+  { id: "skills", label: "Skills" },
+  { id: "abilities", label: "Abilities" }
+];
 
 export default function App() {
   const [agentSpec, setAgentSpec] = useState<AgentSpec>(defaultUiAgentSpec);
   const [apiKey, setApiKey] = useState("");
   const [message, setMessage] = useState("Research RunwayML and produce a concise company profile.");
   const [sendState, setSendState] = useState<SendState>("idle");
+  const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("profile");
+  const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>("apps");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,133 +146,242 @@ export default function App() {
 
         <div className="content-grid">
           <section className="config-surface" aria-label="Agent configuration">
-            <div className="section-block">
-              <p className="eyebrow">Profile</p>
-              <label>
-                Agent name
-                <input
-                  value={agentSpec.identity.name}
-                  onChange={(event) => updateIdentity("name", event.target.value)}
-                />
-              </label>
-              <label>
-                Description
-                <input
-                  value={agentSpec.identity.description}
-                  onChange={(event) => updateIdentity("description", event.target.value)}
-                />
-              </label>
-              <label>
-                Persona
-                <input
-                  value={agentSpec.identity.persona}
-                  onChange={(event) => updateIdentity("persona", event.target.value)}
-                />
-              </label>
-              <label>
-                System prompt
-                <textarea
-                  rows={5}
-                  value={agentSpec.systemPrompt}
-                  onChange={(event) => updateAgent({ systemPrompt: event.target.value })}
-                />
-              </label>
-            </div>
-
-            <div className="section-block">
-              <p className="eyebrow">Model</p>
-              <label>
-                Provider
-                <select
-                  value={agentSpec.model.provider}
-                  onChange={(event) =>
-                    updateAgent({
-                      model: {
-                        ...agentSpec.model,
-                        provider: event.target.value as AgentSpec["model"]["provider"]
-                      }
-                    })
-                  }
+            <div className="config-tabs" role="tablist" aria-label="Configuration sections">
+              {configTabs.map((tab) => (
+                <button
+                  aria-controls={`config-panel-${tab.id}`}
+                  aria-selected={activeConfigTab === tab.id}
+                  className="config-tab"
+                  id={`config-tab-${tab.id}`}
+                  key={tab.id}
+                  onClick={() => setActiveConfigTab(tab.id)}
+                  role="tab"
+                  type="button"
                 >
-                  <option value="openai-compatible">OpenAI-compatible</option>
-                  <option value="openai">OpenAI</option>
-                </select>
-              </label>
-              <label>
-                Model name
-                <input
-                  value={agentSpec.model.name}
-                  onChange={(event) =>
-                    updateAgent({ model: { ...agentSpec.model, name: event.target.value } })
-                  }
-                />
-              </label>
-              <label>
-                API endpoint
-                <input
-                  value={agentSpec.model.apiEndpoint}
-                  onChange={(event) =>
-                    updateAgent({ model: { ...agentSpec.model, apiEndpoint: event.target.value } })
-                  }
-                />
-              </label>
-              <label>
-                API key
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder="Used for this message only"
-                />
-              </label>
-              <p className="hint">API keys are runtime-only in v0.1.1 and are not exported or persisted.</p>
-            </div>
-
-            <div className="section-block">
-              <p className="eyebrow">Apps, Skills, Abilities</p>
-              <div className="mini-stat">{enabledAppCount} mock apps enabled</div>
-              {appRegistry.map((app) => {
-                const selected = agentSpec.apps.find((item) => item.id === app.id);
-                return (
-                  <label className="toggle-row" key={app.id}>
-                    <span>
-                      <strong>{app.label}</strong>
-                      <small>{app.description} Configuration-only.</small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(selected?.enabled)}
-                      onChange={() => toggleApp(app.id)}
-                    />
-                  </label>
-                );
-              })}
-              {skillRegistry.map((skill) => {
-                const selected = agentSpec.skills.find((item) => item.id === skill.id);
-                return (
-                  <label className="toggle-row" key={skill.id}>
-                    <span>
-                      <strong>{skill.label}</strong>
-                      <small>{skill.description}</small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(selected?.enabled)}
-                      onChange={() => toggleSkill(skill.id)}
-                    />
-                  </label>
-                );
-              })}
-              {abilityRegistry.map((ability) => (
-                <div className="ability-row" key={ability.id}>
-                  <span>
-                    <strong>{ability.label}</strong>
-                    <small>{ability.description}</small>
-                  </span>
-                  <span className="status-dot">Enabled</span>
-                </div>
+                  {tab.label}
+                </button>
               ))}
             </div>
+
+            {activeConfigTab === "profile" ? (
+              <div
+                aria-labelledby="config-tab-profile"
+                className="tab-panel"
+                id="config-panel-profile"
+                role="tabpanel"
+              >
+                <div className="panel-heading">
+                  <p className="eyebrow">Profile</p>
+                  <h3>Agent identity</h3>
+                </div>
+                <label>
+                  Agent name
+                  <input
+                    value={agentSpec.identity.name}
+                    onChange={(event) => updateIdentity("name", event.target.value)}
+                  />
+                </label>
+                <label>
+                  Description
+                  <input
+                    value={agentSpec.identity.description}
+                    onChange={(event) => updateIdentity("description", event.target.value)}
+                  />
+                </label>
+                <label>
+                  Persona
+                  <input
+                    value={agentSpec.identity.persona}
+                    onChange={(event) => updateIdentity("persona", event.target.value)}
+                  />
+                </label>
+                <label>
+                  System prompt
+                  <textarea
+                    rows={6}
+                    value={agentSpec.systemPrompt}
+                    onChange={(event) => updateAgent({ systemPrompt: event.target.value })}
+                  />
+                </label>
+              </div>
+            ) : null}
+
+            {activeConfigTab === "model" ? (
+              <div
+                aria-labelledby="config-tab-model"
+                className="tab-panel"
+                id="config-panel-model"
+                role="tabpanel"
+              >
+                <div className="panel-heading">
+                  <p className="eyebrow">Model</p>
+                  <h3>Runtime connection</h3>
+                </div>
+                <label>
+                  Provider
+                  <select
+                    value={agentSpec.model.provider}
+                    onChange={(event) =>
+                      updateAgent({
+                        model: {
+                          ...agentSpec.model,
+                          provider: event.target.value as AgentSpec["model"]["provider"]
+                        }
+                      })
+                    }
+                  >
+                    <option value="openai-compatible">OpenAI-compatible</option>
+                    <option value="openai">OpenAI</option>
+                  </select>
+                </label>
+                <label>
+                  Model name
+                  <input
+                    value={agentSpec.model.name}
+                    onChange={(event) =>
+                      updateAgent({ model: { ...agentSpec.model, name: event.target.value } })
+                    }
+                  />
+                </label>
+                <label>
+                  API endpoint
+                  <input
+                    value={agentSpec.model.apiEndpoint}
+                    onChange={(event) =>
+                      updateAgent({ model: { ...agentSpec.model, apiEndpoint: event.target.value } })
+                    }
+                  />
+                </label>
+                <label>
+                  API key
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(event) => setApiKey(event.target.value)}
+                    placeholder="Used for this message only"
+                  />
+                </label>
+                <p className="hint">API keys are runtime-only in v0.1.1 and are not exported or persisted.</p>
+              </div>
+            ) : null}
+
+            {activeConfigTab === "tools" ? (
+              <div
+                aria-labelledby="config-tab-tools"
+                className="tab-panel"
+                id="config-panel-tools"
+                role="tabpanel"
+              >
+                <div className="panel-heading">
+                  <p className="eyebrow">Tools</p>
+                  <h3>Apps, skills, abilities</h3>
+                </div>
+
+                <div className="config-tabs compact-tabs" role="tablist" aria-label="Tool sections">
+                  {toolsTabs.map((tab) => (
+                    <button
+                      aria-controls={`tools-panel-${tab.id}`}
+                      aria-selected={activeToolsTab === tab.id}
+                      className="config-tab"
+                      id={`tools-tab-${tab.id}`}
+                      key={tab.id}
+                      onClick={() => setActiveToolsTab(tab.id)}
+                      role="tab"
+                      type="button"
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {activeToolsTab === "apps" ? (
+                  <div
+                    aria-labelledby="tools-tab-apps"
+                    className="tools-panel"
+                    id="tools-panel-apps"
+                    role="tabpanel"
+                  >
+                    <div className="tools-heading">
+                      <h4>Apps</h4>
+                      <div className="mini-stat">{enabledAppCount} mock apps enabled</div>
+                    </div>
+                    {appRegistry.map((app) => {
+                      const selected = agentSpec.apps.find((item) => item.id === app.id);
+                      return (
+                        <label className="toggle-row" key={app.id}>
+                          <span>
+                            <strong>{app.label}</strong>
+                            <small>{app.description} Configuration-only.</small>
+                          </span>
+                          <input
+                            aria-checked={Boolean(selected?.enabled)}
+                            className="switch-input"
+                            role="switch"
+                            type="checkbox"
+                            checked={Boolean(selected?.enabled)}
+                            onChange={() => toggleApp(app.id)}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                {activeToolsTab === "skills" ? (
+                  <div
+                    aria-labelledby="tools-tab-skills"
+                    className="tools-panel"
+                    id="tools-panel-skills"
+                    role="tabpanel"
+                  >
+                    <div className="tools-heading">
+                      <h4>Skills</h4>
+                    </div>
+                    {skillRegistry.map((skill) => {
+                      const selected = agentSpec.skills.find((item) => item.id === skill.id);
+                      return (
+                        <label className="toggle-row" key={skill.id}>
+                          <span>
+                            <strong>{skill.label}</strong>
+                            <small>{skill.description}</small>
+                          </span>
+                          <input
+                            aria-checked={Boolean(selected?.enabled)}
+                            className="switch-input"
+                            role="switch"
+                            type="checkbox"
+                            checked={Boolean(selected?.enabled)}
+                            onChange={() => toggleSkill(skill.id)}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                {activeToolsTab === "abilities" ? (
+                  <div
+                    aria-labelledby="tools-tab-abilities"
+                    className="tools-panel"
+                    id="tools-panel-abilities"
+                    role="tabpanel"
+                  >
+                    <div className="tools-heading">
+                      <h4>Abilities</h4>
+                    </div>
+                    {abilityRegistry.map((ability) => (
+                      <div className="ability-row" key={ability.id}>
+                        <span>
+                          <strong>{ability.label}</strong>
+                          <small>{ability.description}</small>
+                        </span>
+                        <span className="status-dot">Enabled</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </section>
 
           <section className="run-surface" aria-label="Chat workbench">

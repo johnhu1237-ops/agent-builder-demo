@@ -111,10 +111,83 @@ textarea {
   background: #fefefe;
 }
 
-.section-block {
-  border-bottom: 1px solid #e7eaf0;
-  padding-bottom: 28px;
-  margin-bottom: 28px;
+.config-surface {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.config-tabs {
+  border-bottom: 1px solid #d8dee8;
+  display: flex;
+  gap: 4px;
+}
+
+.config-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #676f7b;
+  cursor: pointer;
+  font-weight: 700;
+  min-height: 42px;
+  padding: 0 14px;
+}
+
+.config-tab[aria-selected="true"] {
+  border-bottom-color: #030303;
+  color: #030303;
+}
+
+.config-tab:focus-visible {
+  outline: 2px solid #030303;
+  outline-offset: 2px;
+}
+
+.compact-tabs {
+  margin-bottom: 18px;
+}
+
+.compact-tabs .config-tab {
+  font-size: 14px;
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.tab-panel {
+  max-width: 520px;
+}
+
+.panel-heading {
+  margin-bottom: 20px;
+}
+
+.panel-heading h3 {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.tools-panel {
+  display: grid;
+  gap: 4px;
+}
+
+.tools-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.tools-heading h4 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+  margin: 0;
 }
 
 label {
@@ -148,6 +221,48 @@ select:focus,
 textarea:focus {
   outline: 2px solid #030303;
   outline-offset: 1px;
+}
+
+.switch-input {
+  appearance: none;
+  background: #d8dee8;
+  border: 1px solid #c9ccd1;
+  border-radius: 999px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0;
+  position: relative;
+  transition: background 140ms ease, border-color 140ms ease;
+  width: 48px;
+}
+
+.switch-input::after {
+  background: #ffffff;
+  border: 1px solid #c9ccd1;
+  border-radius: 999px;
+  content: "";
+  height: 22px;
+  left: 2px;
+  position: absolute;
+  top: 2px;
+  transition: transform 140ms ease, border-color 140ms ease;
+  width: 22px;
+}
+
+.switch-input:checked {
+  background: #030303;
+  border-color: #030303;
+}
+
+.switch-input:checked::after {
+  border-color: #030303;
+  transform: translateX(20px);
+}
+
+.switch-input:focus {
+  outline: 2px solid #030303;
+  outline-offset: 2px;
 }
 
 .button {
