@@ -11,7 +11,8 @@
     "build": "pnpm -r build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "smoke:health": "curl -sS http://localhost:4001/health && curl -sS http://localhost:4101/health"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.8",
