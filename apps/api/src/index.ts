@@ -1,12 +1,20 @@
 import cors from "cors";
 import express from "express";
-import { defaultAgentSpec, exportAgentSpec, validateAgentSpec, type AgentSpec } from "@agent-builder/shared";
+import { Pool } from "pg";
+import {
+  defaultAgentSpec,
+  exportAgentSpec,
+  validateAgentSpec,
+  type AgentSpec,
+  type AgentTaskStatus
+} from "@agent-builder/shared";
+import { runChatMigrations } from "./chat-migrations";
+import { PgChatStore } from "./chat-store";
+import { redactSecrets } from "./redaction";
 import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
-import { RunStore, statusFromError } from "./run-store";
-import { sendSse } from "./sse";
 
 export type ApiDependencies = Partial<RunnerClient> & {
-  runStore?: RunStore;
+  chatStore?: PgChatStore;
 };
 
 let currentAgentSpec: AgentSpec = defaultAgentSpec;
@@ -17,13 +25,24 @@ function publicAgentSpec(spec: AgentSpec): AgentSpec {
   return { ...exported, model };
 }
 
+function stableError(message: string) {
+  return { error: message };
+}
+
+function statusFromError(message: string): Exclude<AgentTaskStatus, "pending" | "running" | "completed" | "cancelled"> {
+  return message.toLowerCase().includes("timed out") ? "timed_out" : "failed";
+}
+
 export function createApiApp(deps: ApiDependencies = {}) {
   const app = express();
-  const runStore = deps.runStore ?? new RunStore();
+  const chatStore = deps.chatStore;
+  if (!chatStore) {
+    throw new Error("createApiApp requires a PgChatStore. Use createProductionApiApp for process startup.");
+  }
   const runnerClient: RunnerClient = {
-    runAgent:
-      deps.runAgent ??
-      createHttpRunnerClient(process.env.RUNNER_BASE_URL ?? "http://localhost:4101").runAgent
+    runAgentTask:
+      deps.runAgentTask ??
+      createHttpRunnerClient(process.env.RUNNER_BASE_URL ?? "http://localhost:4101").runAgentTask
   };
 
   app.use(cors());
@@ -33,99 +52,178 @@ export function createApiApp(deps: ApiDependencies = {}) {
     res.json({ ok: true });
   });
 
-  app.get("/api/agent/default", (_req, res) => {
+  app.get("/api/agent/default", async (_req, res) => {
+    const persisted = await chatStore.getDefaultAgentSpec();
+    if (persisted) currentAgentSpec = persisted;
     res.json(publicAgentSpec(currentAgentSpec));
   });
 
-  app.put("/api/agent/default", (req, res) => {
+  app.put("/api/agent/default", async (req, res) => {
     const validation = validateAgentSpec(req.body);
     if (!validation.success) {
-      res.status(400).json({ error: validation.error.message });
+      res.status(400).json(stableError(validation.error.message));
       return;
     }
-    currentAgentSpec = exportAgentSpec(validation.data);
+    currentAgentSpec = await chatStore.saveDefaultAgentSpec(validation.data);
     res.json(publicAgentSpec(currentAgentSpec));
   });
 
-  app.post("/api/runs", async (req, res) => {
+  app.post("/api/chat-sessions", async (req, res) => {
+    const validation = validateAgentSpec(req.body.agentSpec ?? currentAgentSpec);
+    if (!validation.success) {
+      res.status(400).json(stableError(validation.error.message));
+      return;
+    }
+    const session = await chatStore.createChatSession({
+      agentSpec: validation.data,
+      title: String(req.body.title ?? validation.data.identity.name)
+    });
+    res.status(201).json({ ...session, agentSpecSnapshot: publicAgentSpec(session.agentSpecSnapshot) });
+  });
+
+  app.get("/api/chat-sessions", async (_req, res) => {
+    res.json(await chatStore.listChatSessions());
+  });
+
+  app.get("/api/chat-sessions/:id", async (req, res) => {
+    const detail = await chatStore.getChatSessionDetail(req.params.id);
+    if (!detail) {
+      res.status(404).json(stableError("Chat session not found"));
+      return;
+    }
+    res.json(detail);
+  });
+
+  app.post("/api/chat-sessions/:id/messages", async (req, res) => {
+    const detail = await chatStore.getChatSessionDetail(req.params.id);
+    if (!detail) {
+      res.status(404).json(stableError("Chat session not found"));
+      return;
+    }
+
     const validation = validateAgentSpec(req.body.agentSpec);
     if (!validation.success) {
-      res.status(400).json({ error: validation.error.message });
+      res.status(400).json(stableError(validation.error.message));
       return;
     }
 
-    const task = String(req.body.task ?? "").trim();
+    const message = String(req.body.message ?? "").trim();
     const apiKey = String(req.body.runtimeSecrets?.apiKey ?? "").trim();
-
-    if (!task) {
-      res.status(400).json({ error: "Task prompt is required" });
+    if (!message) {
+      res.status(400).json(stableError("Message is required"));
       return;
     }
-
     if (!apiKey) {
-      res.status(400).json({ error: "API key is required" });
+      res.status(400).json(stableError("API key is required"));
       return;
     }
 
-    const run = runStore.createQueuedRun({ task, agentSpec: validation.data });
+    const userMessage = await chatStore.createChatMessage({
+      chatSessionId: detail.id,
+      role: "user",
+      contentMarkdown: redactSecrets(message, [apiKey]),
+      taskId: null
+    });
+    const task = await chatStore.createAgentTask({
+      chatSessionId: detail.id,
+      triggerMessageId: userMessage.id,
+      agentSpec: validation.data
+    });
+
+    await chatStore.markAgentTaskRunning(task.id);
 
     try {
-      runStore.updateRun(run.id, { status: "running" });
-      runStore.addEvent(run.id, { type: "starting", message: "Starting runner" });
-      const result = await runnerClient.runAgent({
+      const result = await runnerClient.runAgentTask({
+        chatSessionId: detail.id,
+        message,
         agentSpec: validation.data,
         runtimeSecrets: { apiKey },
-        task
+        sessionId: detail.sessionId,
+        workDir: detail.workDir
       });
-      for (const event of result.events) {
-        runStore.addEvent(run.id, event);
+      if (result.status === "completed" && result.finalMarkdown.trim()) {
+        await chatStore.completeAgentTask(task.id, {
+          status: "completed",
+          resultMarkdown: redactSecrets(result.finalMarkdown, [apiKey]),
+          rawOutputRedacted: redactSecrets(result.rawOutputRedacted, [apiKey]),
+          sessionId: result.sessionId,
+          workDir: result.workDir,
+          taskMessages: result.taskMessages.map((item) => ({
+            ...item,
+            content: redactSecrets(item.content, [apiKey]),
+            output: item.output ? redactSecrets(item.output, [apiKey]) : null
+          }))
+        });
+      } else {
+        await chatStore.failAgentTask(task.id, {
+          status: result.status === "timed_out" ? "timed_out" : "failed",
+          error: result.finalMarkdown || "Runner did not produce assistant content",
+          rawOutputRedacted: redactSecrets(result.rawOutputRedacted, [apiKey]),
+          sessionId: result.sessionId,
+          workDir: result.workDir,
+          taskMessages: result.taskMessages.map((item) => ({
+            ...item,
+            content: redactSecrets(item.content, [apiKey]),
+            output: item.output ? redactSecrets(item.output, [apiKey]) : null
+          }))
+        });
       }
-      const completed = runStore.updateRun(run.id, {
-        status: "succeeded",
-        finalMarkdown: result.finalMarkdown,
-        rawOutput: result.rawOutput,
-        completedAt: new Date().toISOString()
-      });
-      res.status(201).json(completed);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Run failed";
-      runStore.addEvent(run.id, { type: "failed", message });
-      const failed = runStore.updateRun(run.id, {
-        status: statusFromError(message),
-        error: message,
-        completedAt: new Date().toISOString()
+      const messageText = error instanceof Error ? error.message : "Runner failed";
+      await chatStore.failAgentTask(task.id, {
+        status: statusFromError(messageText),
+        error: redactSecrets(messageText, [apiKey]),
+        rawOutputRedacted: "",
+        sessionId: null,
+        workDir: null,
+        taskMessages: [
+          { type: "error", tool: null, content: redactSecrets(messageText, [apiKey]), inputJson: null, output: null }
+        ]
       });
-      res.status(500).json(failed);
-    }
-  });
-
-  app.get("/api/runs/:id", (req, res) => {
-    const run = runStore.getRun(req.params.id);
-    if (!run) {
-      res.status(404).json({ error: "Run not found" });
+      const failedDetail = await chatStore.getChatSessionDetail(detail.id);
+      res.status(500).json(failedDetail);
       return;
     }
-    res.json(run);
+
+    res.status(201).json(await chatStore.getChatSessionDetail(detail.id));
   });
 
-  app.get("/api/runs/:id/events", (req, res) => {
-    const run = runStore.getRun(req.params.id);
-    if (!run) {
-      res.status(404).json({ error: "Run not found" });
+  app.get("/api/chat-sessions/:id/events", async (req, res) => {
+    const detail = await chatStore.getChatSessionDetail(req.params.id);
+    if (!detail) {
+      res.status(404).json(stableError("Chat session not found"));
       return;
     }
-    res.setHeader("content-type", "text/event-stream");
-    res.setHeader("cache-control", "no-cache");
-    sendSse(res, "snapshot", run.traceEvents);
-    res.end();
+    res.json({ task: detail.latestTask, taskMessages: detail.taskMessages });
+  });
+
+  app.get("/api/agent-tasks/:id", async (_req, res) => {
+    res.status(501).json(stableError("Use GET /api/chat-sessions/:id for v0.1.1 task details"));
   });
 
   return app;
 }
 
+async function createProductionApiApp() {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is required for v0.1.1 chat persistence");
+  }
+  const pool = new Pool({ connectionString: databaseUrl });
+  await runChatMigrations(pool);
+  return createApiApp({ chatStore: new PgChatStore(pool) });
+}
+
 if (process.env.NODE_ENV !== "test") {
   const port = Number(process.env.API_PORT ?? 4001);
-  createApiApp().listen(port, () => {
-    console.log(`api listening on ${port}`);
-  });
+  createProductionApiApp()
+    .then((app) => {
+      app.listen(port, () => {
+        console.log(`api listening on ${port}`);
+      });
+    })
+    .catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
 }
