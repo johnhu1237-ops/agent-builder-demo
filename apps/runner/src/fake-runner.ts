@@ -1,29 +1,31 @@
-import type { CreateRunRequest, RunnerResponse } from "@agent-builder/shared";
+import { createAssistantTaskMessage, createStatusTaskMessage, type CreateAgentTaskRequest, type RunnerAgentTaskResponse } from "@agent-builder/shared";
 
-export async function runFakeAgent(request: CreateRunRequest): Promise<RunnerResponse> {
+export async function runFakeAgentTask(request: CreateAgentTaskRequest): Promise<RunnerAgentTaskResponse> {
+  const sessionId = request.sessionId ?? `fake-session-${request.chatSessionId}`;
+  const workDir = request.workDir ?? `/tmp/agent-builder-demo/fake-workspaces/${request.chatSessionId}`;
   const finalMarkdown = [
     "# Research Report",
     "",
     "## Executive Summary",
-    `This is a deterministic demo report for: ${request.task}`,
+    `This is a deterministic demo response for: ${request.message}`,
     "",
-    "## Findings",
-    "- The configured Research Agent received the task.",
-    "- Web Research is enabled as the real v0.1 ability.",
-    "- Mock apps remain configuration-only.",
+    "## Session",
+    request.sessionId ? "Session resumed." : "Fresh session started.",
     "",
     "## Recommendation",
-    "Use the Codex runner smoke path after deployment credentials are configured."
+    "Use Codex mode after deployment credentials and persistent runner storage are configured."
   ].join("\n");
 
   return {
+    status: "completed",
     finalMarkdown,
-    rawOutput: "fake runner completed successfully",
-    events: [
-      { type: "starting", message: "Starting runner" },
-      { type: "researching", message: "Researching task context" },
-      { type: "generating_report", message: "Generating Markdown report" },
-      { type: "completed", message: "Run completed" }
+    rawOutputRedacted: "fake runner completed successfully",
+    sessionId,
+    workDir,
+    taskMessages: [
+      createStatusTaskMessage(request.sessionId ? "Resuming fake session" : "Starting fake session"),
+      createAssistantTaskMessage(finalMarkdown),
+      createStatusTaskMessage("Task completed")
     ]
   };
 }

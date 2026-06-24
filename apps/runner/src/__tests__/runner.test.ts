@@ -1,45 +1,68 @@
 import { describe, expect, it } from "vitest";
 import { defaultAgentSpec } from "@agent-builder/shared";
-import { runFakeAgent } from "../fake-runner";
 import { createCodexCommand } from "../codex-runner";
+import { runFakeAgentTask } from "../fake-runner";
+import { redactRunnerOutput } from "../redaction";
+import { resolveWorkspacePath } from "../workspace";
 
 describe("runner adapters", () => {
-  it("fake runner returns deterministic Markdown and events", async () => {
-    const result = await runFakeAgent({
+  it("fake runner returns deterministic session metadata and task messages", async () => {
+    const result = await runFakeAgentTask({
+      chatSessionId: "chat-session-1",
       agentSpec: defaultAgentSpec,
       runtimeSecrets: { apiKey: "sk-test" },
-      task: "Research Acme Corp."
+      message: "Research Acme Corp.",
+      sessionId: null,
+      workDir: null
     });
 
-    expect(result.finalMarkdown).toContain("# Research Report");
+    expect(result.status).toBe("completed");
     expect(result.finalMarkdown).toContain("Research Acme Corp.");
-    expect(result.rawOutput).toContain("fake runner");
-    expect(result.events.map((event) => event.type)).toEqual([
-      "starting",
-      "researching",
-      "generating_report",
-      "completed"
-    ]);
+    expect(result.sessionId).toBe("fake-session-chat-session-1");
+    expect(result.workDir).toContain("fake-workspaces/chat-session-1");
+    expect(result.taskMessages.map((event) => event.type)).toEqual(["status", "text", "status"]);
+    expect(JSON.stringify(result)).not.toContain("sk-test");
   });
 
-  it("Codex command hides runtime details from the materialized prompt but includes required CLI flags", () => {
+  it("Codex command supports first-turn execution", () => {
     const command = createCodexCommand({
       modelName: "gpt-5",
-      workspacePath: "/tmp/run-1",
-      finalPath: "/tmp/run-1/final.md",
-      prompt: "Return Markdown."
+      workspacePath: "/tmp/work",
+      finalPath: "/tmp/work/final.md",
+      prompt: "Return Markdown.",
+      sessionId: null
     });
 
-    expect(command.command).toBe("codex");
-    expect(command.args).toContain("--search");
-    expect(command.args).toContain("--ask-for-approval");
-    expect(command.args).toContain("never");
     expect(command.args).toContain("exec");
-    expect(command.args).toContain("--json");
-    expect(command.args).toContain("--model");
-    expect(command.args).toContain("gpt-5");
-    expect(command.args).toContain("--sandbox");
-    expect(command.args).toContain("danger-full-access");
+    expect(command.args).not.toContain("resume");
     expect(command.args).toContain("--output-last-message");
+  });
+
+  it("Codex command supports resumed execution", () => {
+    const command = createCodexCommand({
+      modelName: "gpt-5",
+      workspacePath: "/tmp/work",
+      finalPath: "/tmp/work/final.md",
+      prompt: "Continue.",
+      sessionId: "codex-session-1"
+    });
+
+    expect(command.args).toContain("resume");
+    expect(command.args).toContain("codex-session-1");
+    expect(command.args).toContain("Continue.");
+  });
+
+  it("redacts runtime API keys from raw output", () => {
+    expect(redactRunnerOutput("OPENAI_API_KEY=sk-test secret", ["sk-test"])).toBe("OPENAI_API_KEY=[REDACTED] secret");
+  });
+
+  it("resolves a stable workspace path per chat session", async () => {
+    const workDir = await resolveWorkspacePath({
+      requestedWorkDir: null,
+      chatSessionId: "chat-session-1",
+      rootDir: "/tmp/agent-builder-demo-runner"
+    });
+
+    expect(workDir).toBe("/tmp/agent-builder-demo-runner/chat-session-1");
   });
 });

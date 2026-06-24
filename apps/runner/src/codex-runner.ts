@@ -1,14 +1,17 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { materializePrompt, type CreateRunRequest, type RunnerResponse } from "@agent-builder/shared";
+import { createStatusTaskMessage, materializeChatPrompt, type CreateAgentTaskRequest, type RunnerAgentTaskResponse } from "@agent-builder/shared";
+import { redactRunnerOutput } from "./redaction";
+import { resolveWorkspacePath } from "./workspace";
 
 export type CodexCommandInput = {
   modelName: string;
   workspacePath: string;
   finalPath: string;
   prompt: string;
+  sessionId: string | null;
 };
 
 export type CodexCommand = {
@@ -17,13 +20,14 @@ export type CodexCommand = {
 };
 
 export function createCodexCommand(input: CodexCommandInput): CodexCommand {
+  const execArgs = input.sessionId ? ["exec", "resume", input.sessionId] : ["exec"];
   return {
     command: "codex",
     args: [
       "--search",
       "--ask-for-approval",
       "never",
-      "exec",
+      ...execArgs,
       "--json",
       "--model",
       input.modelName,
@@ -39,77 +43,104 @@ export function createCodexCommand(input: CodexCommandInput): CodexCommand {
   };
 }
 
-export async function runCodexAgent(request: CreateRunRequest, timeoutMs: number): Promise<RunnerResponse> {
-  const workspacePath = await mkdir(join(tmpdir(), `agent-run-${Date.now()}-${Math.random().toString(16).slice(2)}`), {
-    recursive: true
+export async function runCodexAgentTask(request: CreateAgentTaskRequest, timeoutMs: number): Promise<RunnerAgentTaskResponse> {
+  const rootDir = process.env.RUNNER_WORKSPACE_ROOT ?? join(tmpdir(), "agent-builder-demo-workspaces");
+  const workspacePath = await resolveWorkspacePath({
+    requestedWorkDir: request.workDir,
+    chatSessionId: request.chatSessionId,
+    rootDir
   });
-
-  if (!workspacePath) {
-    throw new Error("Failed to create runner workspace");
-  }
-
   const finalPath = join(workspacePath, "final.md");
-  const prompt = materializePrompt({ agentSpec: request.agentSpec, task: request.task });
+  const prompt = materializeChatPrompt({
+    agentSpec: request.agentSpec,
+    message: request.message,
+    isResume: Boolean(request.sessionId)
+  });
   await writeFile(join(workspacePath, "prompt.md"), prompt, "utf8");
 
-  const command = createCodexCommand({
+  const firstCommand = createCodexCommand({
     modelName: request.agentSpec.model.name,
     workspacePath,
     finalPath,
-    prompt
+    prompt,
+    sessionId: request.sessionId
   });
 
   const rawChunks: string[] = [];
+  const events = [
+    createStatusTaskMessage(request.sessionId ? "Resuming Codex session" : "Starting Codex session")
+  ];
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(command.command, command.args, {
-        cwd: workspacePath,
-        env: {
-          ...process.env,
-          OPENAI_API_KEY: request.runtimeSecrets.apiKey,
-          OPENAI_BASE_URL: request.agentSpec.model.apiEndpoint
-        },
-        stdio: ["ignore", "pipe", "pipe"]
-      });
+    await runCommand(firstCommand, request, rawChunks, timeoutMs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Codex failed";
+    const canFallback = Boolean(request.sessionId) && message.toLowerCase().includes("resume");
+    if (!canFallback) {
+      throw error;
+    }
+    events.push({ type: "error", tool: "codex", content: `Resume failed: ${message}. Starting fresh session.`, inputJson: null, output: null });
+    const fallbackCommand = createCodexCommand({
+      modelName: request.agentSpec.model.name,
+      workspacePath,
+      finalPath,
+      prompt,
+      sessionId: null
+    });
+    await runCommand(fallbackCommand, request, rawChunks, timeoutMs);
+  }
 
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error("Run timed out"));
-      }, timeoutMs);
+  const finalMarkdown = await readFile(finalPath, "utf8").catch(() => "");
+  if (!finalMarkdown.trim()) {
+    throw new Error("Codex completed without final Markdown output");
+  }
 
-      child.stdout.on("data", (chunk) => rawChunks.push(chunk.toString()));
-      child.stderr.on("data", (chunk) => rawChunks.push(chunk.toString()));
-      child.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`Codex exited with code ${code}`));
-        }
-      });
+  const rawOutputRedacted = redactRunnerOutput(rawChunks.join(""), [request.runtimeSecrets.apiKey]);
+  const parsedSessionId = extractSessionId(rawOutputRedacted) ?? request.sessionId;
+  events.push(createStatusTaskMessage("Task completed"));
+
+  return {
+    status: "completed",
+    finalMarkdown: redactRunnerOutput(finalMarkdown, [request.runtimeSecrets.apiKey]),
+    rawOutputRedacted,
+    taskMessages: events,
+    sessionId: parsedSessionId,
+    workDir: workspacePath
+  };
+}
+
+async function runCommand(command: CodexCommand, request: CreateAgentTaskRequest, rawChunks: string[], timeoutMs: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command.command, command.args, {
+      cwd: command.args[command.args.indexOf("-C") + 1],
+      env: {
+        ...process.env,
+        OPENAI_API_KEY: request.runtimeSecrets.apiKey,
+        OPENAI_BASE_URL: request.agentSpec.model.apiEndpoint
+      },
+      stdio: ["ignore", "pipe", "pipe"]
     });
 
-    const finalMarkdown = await readFile(finalPath, "utf8").catch(() => "");
-    if (!finalMarkdown.trim()) {
-      throw new Error("Codex completed without final Markdown output");
-    }
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("Run timed out"));
+    }, timeoutMs);
 
-    return {
-      finalMarkdown,
-      rawOutput: rawChunks.join(""),
-      events: [
-        { type: "starting", message: "Starting runner" },
-        { type: "researching", message: "Researching task context" },
-        { type: "generating_report", message: "Generating Markdown report" },
-        { type: "completed", message: "Run completed" }
-      ]
-    };
-  } finally {
-    await rm(workspacePath, { recursive: true, force: true });
-  }
+    child.stdout.on("data", (chunk) => rawChunks.push(chunk.toString()));
+    child.stderr.on("data", (chunk) => rawChunks.push(chunk.toString()));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`Codex exited with code ${code}`));
+    });
+  });
+}
+
+function extractSessionId(rawOutput: string): string | null {
+  const match = rawOutput.match(/"session_id"\s*:\s*"([^"]+)"/) ?? rawOutput.match(/"sessionId"\s*:\s*"([^"]+)"/);
+  return match?.[1] ?? null;
 }
