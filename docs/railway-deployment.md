@@ -33,3 +33,29 @@ Create two Railway services from the same repository.
 ## Fallback deployment mode
 
 Set `RUNNER_MODE=fake` on the runner service if Codex credentials or endpoint mapping need debugging. This keeps the UI/API demo usable while the real runner is repaired.
+
+## v0.1.1 Services
+
+- Web: Vite static build served from `apps/web`.
+- API: Express service with `DATABASE_URL` and `RUNNER_BASE_URL`.
+- Runner: Express service with `RUNNER_MODE=fake` or `RUNNER_MODE=codex`.
+- Postgres: required for chat sessions, messages, tasks, and task messages.
+
+## Required API Variables
+
+```dotenv
+DATABASE_URL=<Railway Postgres URL>
+RUNNER_BASE_URL=<runner service URL>
+API_PORT=4001
+```
+
+## Required Runner Variables
+
+```dotenv
+RUNNER_PORT=4101
+RUNNER_MODE=fake
+RUN_TIMEOUT_MS=120000
+RUNNER_WORKSPACE_ROOT=/data/agent-builder-workspaces
+```
+
+Codex resume requires persistent runner storage. Without a persistent volume, chat messages still persist in Postgres, but workspace-backed resume can fail after runner restart. In that case the runner records the resume failure and starts a fresh session when safe.

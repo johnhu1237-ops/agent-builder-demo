@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "pnpm -r typecheck",
-    "smoke:health": "curl -sS http://localhost:4001/health && curl -sS http://localhost:4101/health"
+    "smoke:health": "curl -sS http://localhost:4001/health && curl -sS http://localhost:4101/health",
+    "smoke:chat": "curl -sS -X POST http://localhost:4001/api/chat-sessions -H 'content-type: application/json' -d '{\"agentSpec\":{\"identity\":{\"name\":\"Research Agent\",\"description\":\"Research companies and summarize findings.\",\"persona\":\"Clear, concise research partner\"},\"model\":{\"provider\":\"openai-compatible\",\"name\":\"gpt-5\",\"apiEndpoint\":\"https://api.openai.com/v1\"},\"systemPrompt\":\"You are a careful research assistant.\",\"apps\":[{\"id\":\"browser\",\"enabled\":true,\"configSummary\":\"Web research\"}],\"skills\":[{\"id\":\"company-research\",\"enabled\":true}],\"abilities\":[{\"id\":\"web-research\",\"enabled\":true}]},\"title\":\"Research Agent\"}'"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.8",

@@ -1,36 +1,45 @@
 # Local Smoke Test
 
-## Start services
+## Requirements
+
+- Node 22+
+- pnpm
+- Docker
+- Postgres reachable through `DATABASE_URL`
+
+## Start Postgres
 
 ```bash
-RUNNER_MODE=fake pnpm dev
+docker run --rm --name agent-builder-postgres -p 54329:5432 -e POSTGRES_PASSWORD=agent_builder -e POSTGRES_DB=agent_builder postgres:16
 ```
 
-Expected ports:
-
-- Web: http://localhost:5173
-- API: http://localhost:4001
-- Runner: http://localhost:4101
-
-## Check health
+Use:
 
 ```bash
-pnpm smoke:health
+export DATABASE_URL=postgres://postgres:agent_builder@localhost:54329/agent_builder
 ```
 
-Expected:
+## Start Services
 
-```json
-{"ok":true}{"ok":true,"runnerMode":"fake"}
+```bash
+RUNNER_MODE=fake DATABASE_URL=$DATABASE_URL pnpm dev
 ```
 
-## UI path
+Open `http://localhost:5173`.
 
-1. Open http://localhost:5173.
-2. Confirm the workspace opens directly to Agent Builder.
-3. Enter any API key value, such as `sk-local-fake`.
-4. Keep `Research RunwayML and produce a concise company profile.` as the task.
-5. Click `Run agent`.
-6. Confirm a Markdown report appears.
-7. Click `Export Agent Spec`.
-8. Confirm the copied JSON does not contain the API key.
+## Fake Chat Smoke
+
+1. Enter any non-empty API key.
+2. Send `Research RunwayML and produce a concise company profile.`
+3. Confirm the message list shows the user message and a Markdown assistant response.
+4. Send `Continue with competitors.`
+5. Confirm the timeline shows completed task events.
+6. Restart the API and confirm the chat session still appears.
+
+## Codex Chat Smoke
+
+```bash
+RUNNER_MODE=codex RUNNER_WORKSPACE_ROOT=/tmp/agent-builder-workspaces DATABASE_URL=$DATABASE_URL pnpm dev
+```
+
+Use a valid API key in the UI. Send a first message, then a follow-up. The follow-up should reuse the saved `session_id` and `work_dir` when the runner workspace still exists.
