@@ -1,0 +1,26 @@
+{
+  "name": "agent-builder-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @agent-builder/api --filter @agent-builder/runner --filter @agent-builder/web dev",
+    "dev:api": "pnpm --filter @agent-builder/api dev",
+    "dev:runner": "pnpm --filter @agent-builder/runner dev",
+    "dev:web": "pnpm --filter @agent-builder/web dev",
+    "build": "pnpm -r build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.8",
+    "@testing-library/react": "^16.0.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
+  }
+}
