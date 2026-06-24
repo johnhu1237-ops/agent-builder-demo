@@ -72,8 +72,14 @@ export type SendChatMessageRequest = {
   };
 };
 
+export type RunnerEventsTarget = {
+  endpoint: string;
+  token: string;
+};
+
 export type CreateAgentTaskRequest = {
   chatSessionId: string;
+  taskId?: string;
   message: string;
   agentSpec: AgentSpec;
   runtimeSecrets: {
@@ -81,9 +87,16 @@ export type CreateAgentTaskRequest = {
   };
   sessionId: string | null;
   workDir: string | null;
+  runnerEvents?: RunnerEventsTarget | null;
 };
 
 export type RunnerTaskMessage = Omit<TaskMessage, "id" | "taskId" | "seq" | "createdAt">;
+
+export type RunnerTaskEventRequest = {
+  taskId: string;
+  secretValues?: string[];
+  messages: RunnerTaskMessage[];
+};
 
 export type RunnerAgentTaskResponse = {
   status: Exclude<AgentTaskStatus, "pending" | "running" | "cancelled">;
