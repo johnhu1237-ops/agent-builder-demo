@@ -117,10 +117,18 @@ textarea {
   gap: 24px;
 }
 
+.config-toolbar {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
 .config-tabs {
   border-bottom: 1px solid #d8dee8;
   display: flex;
   gap: 4px;
+  min-width: 0;
 }
 
 .config-tab {
@@ -285,6 +293,14 @@ textarea:focus {
   color: #000000;
 }
 
+.button.compact {
+  background: #ffffff;
+  color: #000000;
+  min-height: 36px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
 .button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -365,6 +381,15 @@ textarea:focus {
   .run-surface {
     border-left: 0;
     border-top: 1px solid #e7eaf0;
+  }
+
+  .config-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .button.compact {
+    width: fit-content;
   }
 }
 

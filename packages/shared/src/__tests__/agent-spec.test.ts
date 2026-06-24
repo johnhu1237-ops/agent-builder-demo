@@ -7,6 +7,25 @@ describe("Agent Spec validation", () => {
     expect(result.success).toBe(true);
   });
 
+  it("does not include persona in the default agent identity", () => {
+    expect("persona" in defaultAgentSpec.identity).toBe(false);
+  });
+
+  it("strips legacy persona fields from persisted specs", () => {
+    const result = validateAgentSpec({
+      ...defaultAgentSpec,
+      identity: {
+        ...defaultAgentSpec.identity,
+        persona: "Legacy persona"
+      }
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect("persona" in result.data.identity).toBe(false);
+    }
+  });
+
   it("rejects unknown plugin ids", () => {
     const result = validateAgentSpec({
       ...defaultAgentSpec,
@@ -27,6 +46,7 @@ describe("Agent Spec validation", () => {
       }
     });
     expect(JSON.stringify(exported)).not.toContain("sk-secret");
+    expect(JSON.stringify(exported)).not.toContain("persona");
     expect(exported.model.apiKeyRef).toBe("runtime-only");
   });
 });

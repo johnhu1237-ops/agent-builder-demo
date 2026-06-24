@@ -47,7 +47,7 @@ describe("chat prompt materialization", () => {
     });
 
     expect(prompt).toContain("# Agent: Research Agent");
-    expect(prompt).toContain("Persona: Careful research analyst");
+    expect(prompt).not.toContain("Persona:");
     expect(prompt).toContain("Description: Researches companies, products, or markets and writes concise Markdown reports.");
     expect(prompt).toContain("## System Instructions");
     expect(prompt).toContain("## Enabled Apps");

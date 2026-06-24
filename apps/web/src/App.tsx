@@ -8,10 +8,11 @@ import {
   type ChatSession,
   type ChatSessionDetail
 } from "@agent-builder/shared";
-import { createChatSession, listChatSessions, sendChatMessage } from "./api";
+import { createChatSession, getDefaultAgent, listChatSessions, saveDefaultAgent, sendChatMessage } from "./api";
 import { createExportPayload, defaultUiAgentSpec } from "./defaults";
 
 type SendState = "idle" | "sending" | "failed";
+type SaveState = "idle" | "saving" | "saved" | "failed";
 type ConfigTab = "profile" | "model" | "tools";
 type ToolsTab = "apps" | "skills" | "abilities";
 
@@ -32,6 +33,7 @@ export default function App() {
   const [apiKey, setApiKey] = useState("");
   const [message, setMessage] = useState("Research RunwayML and produce a concise company profile.");
   const [sendState, setSendState] = useState<SendState>("idle");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("profile");
   const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>("apps");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -45,6 +47,11 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    getDefaultAgent()
+      .then((savedAgentSpec) => {
+        if (!cancelled) setAgentSpec(savedAgentSpec);
+      })
+      .catch(() => undefined);
     listChatSessions()
       .then((items) => {
         if (!cancelled) setSessions(items);
@@ -56,10 +63,12 @@ export default function App() {
   }, []);
 
   function updateAgent(patch: Partial<AgentSpec>) {
+    setSaveState("idle");
     setAgentSpec((current) => ({ ...current, ...patch }));
   }
 
   function updateIdentity(field: keyof AgentSpec["identity"], value: string) {
+    setSaveState("idle");
     setAgentSpec((current) => ({
       ...current,
       identity: { ...current.identity, [field]: value }
@@ -67,6 +76,7 @@ export default function App() {
   }
 
   function toggleApp(id: string) {
+    setSaveState("idle");
     setAgentSpec((current) => ({
       ...current,
       apps: current.apps.map((app) => (app.id === id ? { ...app, enabled: !app.enabled } : app))
@@ -74,12 +84,26 @@ export default function App() {
   }
 
   function toggleSkill(id: string) {
+    setSaveState("idle");
     setAgentSpec((current) => ({
       ...current,
       skills: current.skills.map((skill) =>
         skill.id === id ? { ...skill, enabled: !skill.enabled } : skill
       )
     }));
+  }
+
+  async function saveAgentConfig() {
+    setError(null);
+    setSaveState("saving");
+    try {
+      const savedSpec = await saveDefaultAgent(agentSpec);
+      setAgentSpec(savedSpec);
+      setSaveState("saved");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Agent configuration failed to save");
+      setSaveState("failed");
+    }
   }
 
   async function sendMessage() {
@@ -146,21 +170,31 @@ export default function App() {
 
         <div className="content-grid">
           <section className="config-surface" aria-label="Agent configuration">
-            <div className="config-tabs" role="tablist" aria-label="Configuration sections">
-              {configTabs.map((tab) => (
-                <button
-                  aria-controls={`config-panel-${tab.id}`}
-                  aria-selected={activeConfigTab === tab.id}
-                  className="config-tab"
-                  id={`config-tab-${tab.id}`}
-                  key={tab.id}
-                  onClick={() => setActiveConfigTab(tab.id)}
-                  role="tab"
-                  type="button"
-                >
-                  {tab.label}
-                </button>
-              ))}
+            <div className="config-toolbar">
+              <div className="config-tabs" role="tablist" aria-label="Configuration sections">
+                {configTabs.map((tab) => (
+                  <button
+                    aria-controls={`config-panel-${tab.id}`}
+                    aria-selected={activeConfigTab === tab.id}
+                    className="config-tab"
+                    id={`config-tab-${tab.id}`}
+                    key={tab.id}
+                    onClick={() => setActiveConfigTab(tab.id)}
+                    role="tab"
+                    type="button"
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                className="button compact"
+                type="button"
+                onClick={saveAgentConfig}
+                disabled={saveState === "saving"}
+              >
+                {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : "Save"}
+              </button>
             </div>
 
             {activeConfigTab === "profile" ? (
@@ -186,13 +220,6 @@ export default function App() {
                   <input
                     value={agentSpec.identity.description}
                     onChange={(event) => updateIdentity("description", event.target.value)}
-                  />
-                </label>
-                <label>
-                  Persona
-                  <input
-                    value={agentSpec.identity.persona}
-                    onChange={(event) => updateIdentity("persona", event.target.value)}
                   />
                 </label>
                 <label>

@@ -21,8 +21,7 @@ export const agentSpecSchema = z.object({
   version: z.literal("0.1"),
   identity: z.object({
     name: z.string().min(1, "Agent name is required"),
-    description: z.string().min(1, "Agent description is required"),
-    persona: z.string().min(1, "Agent persona is required")
+    description: z.string().min(1, "Agent description is required")
   }),
   systemPrompt: z.string().min(1, "System prompt is required"),
   model: z.object({
@@ -46,8 +45,7 @@ export const defaultAgentSpec: AgentSpec = {
   version: "0.1",
   identity: {
     name: "Research Agent",
-    description: "Researches companies, products, or markets and writes concise Markdown reports.",
-    persona: "Careful research analyst"
+    description: "Researches companies, products, or markets and writes concise Markdown reports."
   },
   systemPrompt:
     "You are a careful research agent. Use available web research capability. Do not fabricate facts. Produce a concise Markdown report.",

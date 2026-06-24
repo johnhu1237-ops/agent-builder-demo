@@ -42,7 +42,6 @@ export function materializePrompt({ agentSpec, task }: MaterializePromptInput): 
   return [
     `# Agent: ${agentSpec.identity.name}`,
     "",
-    `Persona: ${agentSpec.identity.persona}`,
     `Description: ${agentSpec.identity.description}`,
     "",
     "## System Instructions",
@@ -94,8 +93,6 @@ export function materializeChatPrompt(input: {
     `# ${input.agentSpec.identity.name}`,
     "",
     input.agentSpec.identity.description,
-    "",
-    `Persona: ${input.agentSpec.identity.persona}`,
     "",
     "## System Instructions",
     input.agentSpec.systemPrompt,

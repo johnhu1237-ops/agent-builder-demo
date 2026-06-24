@@ -6,10 +6,20 @@ import { defaultAgentSpec } from "@agent-builder/shared";
 import App from "../App";
 
 const fetchMock = vi.fn();
+const persistedAgentSpec = {
+  ...defaultAgentSpec,
+  identity: { ...defaultAgentSpec.identity, name: "Persisted Research Agent" }
+};
 
 beforeEach(() => {
   global.fetch = fetchMock;
   fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+    if (url.endsWith("/api/agent/default") && options?.method !== "PUT") {
+      return jsonResponse(persistedAgentSpec);
+    }
+    if (url.endsWith("/api/agent/default") && options?.method === "PUT") {
+      return jsonResponse(JSON.parse(String(options.body)));
+    }
     if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
       return jsonResponse([]);
     }
@@ -66,6 +76,20 @@ afterEach(() => {
 });
 
 describe("App chat workbench", () => {
+  it("loads the saved default agent configuration on startup", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Agent name")).toHaveValue("Persisted Research Agent");
+    });
+    expect(screen.queryByLabelText("Persona")).not.toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/agent/default"),
+      expect.any(Object)
+    );
+  });
+
   it("organizes agent configuration into tabs", async () => {
     render(<App />);
     const user = userEvent.setup();
@@ -121,6 +145,29 @@ describe("App chat workbench", () => {
 
     expect(skillSwitches).toHaveLength(3);
     expect(skillSwitches[0]).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("saves the current agent configuration as the default agent", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Agent name")).toHaveValue("Persisted Research Agent");
+    });
+    await user.clear(screen.getByLabelText("Agent name"));
+    await user.type(screen.getByLabelText("Agent name"), "Saved Research Agent");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Saved")).toBeInTheDocument();
+    });
+
+    const saveCall = fetchMock.mock.calls.find(
+      ([url, options]) => String(url).endsWith("/api/agent/default") && options?.method === "PUT"
+    );
+
+    expect(saveCall).toBeDefined();
+    expect(JSON.parse(String(saveCall?.[1]?.body)).identity.name).toBe("Saved Research Agent");
   });
 
   it("sends a chat message and renders assistant Markdown", async () => {
