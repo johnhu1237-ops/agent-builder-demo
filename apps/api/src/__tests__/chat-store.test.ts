@@ -968,4 +968,73 @@ describe("PgChatStore", () => {
     expect(detail?.taskMessages[0]?.output).toBe("apiKey: [REDACTED]");
     expect(JSON.stringify(detail?.taskMessages[0]?.inputJson)).not.toContain("sk-test-secret");
   });
+
+  it("appends runner task messages with ordered seq values", async () => {
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Incremental events"
+    });
+    const trigger = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Run task.",
+      taskId: null
+    });
+    const task = await store.createAgentTask({
+      chatSessionId: session.id,
+      triggerMessageId: trigger.id,
+      agentSpec: defaultAgentSpec
+    });
+    await store.markAgentTaskRunning(task.id);
+
+    await store.appendRunnerTaskMessages(task.id, [
+      { type: "status", tool: null, content: "first", inputJson: null, output: null },
+      { type: "text", tool: null, content: "second", inputJson: null, output: null }
+    ]);
+    await store.appendRunnerTaskMessages(task.id, [
+      { type: "log", tool: "codex", content: "third", inputJson: { secret: "sk-test" }, output: "output sk-test" }
+    ], ["sk-test"]);
+
+    const detail = await store.getChatSessionDetail(session.id);
+
+    expect(detail?.taskMessages.map((message) => [message.seq, message.content])).toEqual([
+      [0, "first"],
+      [1, "second"],
+      [2, "third"]
+    ]);
+    expect(JSON.stringify(detail?.taskMessages)).not.toContain("sk-test");
+  });
+
+  it("rejects incremental runner messages for terminal tasks", async () => {
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Terminal event rejection"
+    });
+    const trigger = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Run task.",
+      taskId: null
+    });
+    const task = await store.createAgentTask({
+      chatSessionId: session.id,
+      triggerMessageId: trigger.id,
+      agentSpec: defaultAgentSpec
+    });
+    await store.markAgentTaskRunning(task.id);
+    await store.failAgentTask(task.id, {
+      status: "failed",
+      error: "failed",
+      rawOutputRedacted: "",
+      sessionId: null,
+      workDir: null,
+      taskMessages: []
+    });
+
+    await expect(
+      store.appendRunnerTaskMessages(task.id, [
+        { type: "status", tool: null, content: "too late", inputJson: null, output: null }
+      ])
+    ).rejects.toThrow("Cannot append task messages to terminal task");
+  });
 });

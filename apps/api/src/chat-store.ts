@@ -584,6 +584,70 @@ export class PgChatStore {
     return mapAgentTask(row);
   }
 
+  async appendRunnerTaskMessages(
+    taskId: string,
+    messages: RunnerTaskMessage[],
+    secretValues: string[] = []
+  ): Promise<void> {
+    if (messages.length === 0) {
+      return;
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const task = await getTaskById(client, taskId);
+      if (!task) {
+        throw new Error(`Agent task not found: ${taskId}`);
+      }
+      if (terminalTaskStatuses.has(task.status)) {
+        throw new Error(`Cannot append task messages to terminal task: ${taskId}`);
+      }
+
+      const nextSeqResult = await client.query<{ next_seq: number }>(
+        `
+          select coalesce(max(seq) + 1, 0) as next_seq
+          from task_message
+          where task_id = $1
+        `,
+        [taskId]
+      );
+      const startSeq = Number(nextSeqResult.rows[0]?.next_seq ?? 0);
+      const redactedMessages = messages.map((message) => ({
+        ...message,
+        content: redactSecrets(message.content, secretValues),
+        inputJson: redactUnknownJson(message.inputJson, undefined, secretValues),
+        output: message.output ? redactSecrets(message.output, secretValues) : null
+      }));
+
+      for (const [index, message] of redactedMessages.entries()) {
+        await client.query(
+          `
+            insert into task_message (id, task_id, seq, type, tool, content, input_json, output)
+            values ($1, $2, $3, $4, $5, $6, $7, $8)
+          `,
+          [
+            nanoid(),
+            taskId,
+            startSeq + index,
+            message.type,
+            message.tool,
+            message.content,
+            message.inputJson,
+            message.output
+          ]
+        );
+      }
+      await this.touchChatSession(task.chat_session_id);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async completeAgentTask(taskId: string, input: CompleteAgentTaskInput): Promise<AgentTask> {
     const client = await this.pool.connect();
     try {
