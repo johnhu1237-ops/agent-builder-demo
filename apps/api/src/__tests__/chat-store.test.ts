@@ -25,7 +25,7 @@ describe("PgChatStore", () => {
     await expect(runChatMigrations(pool)).resolves.toBeUndefined();
   });
 
-  it("repairs duplicate trigger tasks and backfills canonical task links during migrations", async () => {
+  it("repairs duplicate trigger tasks by keeping the richer terminal canonical task during migrations", async () => {
     const session = await store.createChatSession({
       agentSpec: defaultAgentSpec,
       title: "Migration repair session"
@@ -39,6 +39,13 @@ describe("PgChatStore", () => {
 
     await pool.query("drop index if exists uq_agent_tasks_trigger_message_id");
 
+    const assistantMessage = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "assistant",
+      contentMarkdown: "Task completed.",
+      taskId: null
+    });
+
     await pool.query(
       `
         insert into agent_tasks (
@@ -47,35 +54,52 @@ describe("PgChatStore", () => {
           trigger_message_id,
           agent_spec_snapshot,
           status,
+          result_markdown,
+          completed_at,
           created_at
         )
         values
-          ('task-late', $1, $2, $3, 'pending', '2026-01-01T00:00:01Z'),
-          ('task-early', $1, $2, $3, 'pending', '2026-01-01T00:00:00Z')
+          ('task-pending-early', $1, $2, $3, 'pending', null, null, '2026-01-01T00:00:00Z'),
+          ('task-completed-late', $1, $2, $3, 'completed', '# Done', '2026-01-01T00:05:00Z', '2026-01-01T00:00:01Z')
       `,
       [session.id, triggerMessage.id, defaultAgentSpec]
     );
 
-    await pool.query("update chat_message set task_id = $2 where id = $1", [triggerMessage.id, "task-late"]);
+    await pool.query("update chat_message set task_id = $2 where id = $1", [triggerMessage.id, "task-completed-late"]);
+    await pool.query("update chat_message set task_id = $2 where id = $1", [assistantMessage.id, "task-completed-late"]);
 
     await expect(runChatMigrations(pool)).resolves.toBeUndefined();
 
-    const repairedTasks = await pool.query<{ id: string }>(
+    const repairedTasks = await pool.query<{
+      id: string;
+      status: string;
+      result_markdown: string | null;
+    }>(
       `
-        select id
+        select id, status, result_markdown
         from agent_tasks
         where trigger_message_id = $1
         order by created_at asc, created_order asc, id asc
       `,
       [triggerMessage.id]
     );
-    const repairedMessage = await pool.query<{ task_id: string | null }>(
-      "select task_id from chat_message where id = $1",
-      [triggerMessage.id]
+    const repairedMessages = await pool.query<{ id: string; task_id: string | null }>(
+      `
+        select id, task_id
+        from chat_message
+        where id in ($1, $2)
+        order by created_at asc, id asc
+      `,
+      [triggerMessage.id, assistantMessage.id]
     );
 
-    expect(repairedTasks.rows.map((row) => row.id)).toEqual(["task-early"]);
-    expect(repairedMessage.rows[0]?.task_id).toBe("task-early");
+    expect(repairedTasks.rows).toEqual([
+      { id: "task-completed-late", status: "completed", result_markdown: "# Done" }
+    ]);
+    expect(repairedMessages.rows).toEqual([
+      { id: triggerMessage.id, task_id: "task-completed-late" },
+      { id: assistantMessage.id, task_id: "task-completed-late" }
+    ]);
 
     await expect(runChatMigrations(pool)).resolves.toBeUndefined();
 
@@ -88,7 +112,7 @@ describe("PgChatStore", () => {
       [triggerMessage.id]
     );
 
-    expect(rerunTasks.rows.map((row) => row.id)).toEqual(["task-early"]);
+    expect(rerunTasks.rows.map((row) => row.id)).toEqual(["task-completed-late"]);
   });
 
   it("repoints every chat message linked to a deleted duplicate task during migration repair", async () => {
@@ -351,6 +375,43 @@ describe("PgChatStore", () => {
     expect(messageTask.rows[0]?.task_id).toBe(firstTask.id);
   });
 
+  it("propagates unexpected insert failures from createAgentTask", async () => {
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Research Agent"
+    });
+    const triggerMessage = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Run the task.",
+      taskId: null
+    });
+
+    await pool.query("drop index if exists uq_agent_tasks_trigger_message_id");
+    await pool.query(`
+      alter table agent_tasks
+      add constraint reject_pending_agent_tasks
+      check (status <> 'pending')
+    `);
+
+    await expect(
+      store.createAgentTask({
+        chatSessionId: session.id,
+        triggerMessageId: triggerMessage.id,
+        agentSpec: defaultAgentSpec
+      })
+    ).rejects.toThrow();
+
+    const taskCount = await pool.query<{ count: string }>("select count(*)::text as count from agent_tasks");
+    const messageTask = await pool.query<{ task_id: string | null }>(
+      "select task_id from chat_message where id = $1",
+      [triggerMessage.id]
+    );
+
+    expect(taskCount.rows[0]?.count).toBe("0");
+    expect(messageTask.rows[0]?.task_id).toBeNull();
+  });
+
   it("throws a clear corruption error when a linked task row is missing", async () => {
     const session = await store.createChatSession({
       agentSpec: defaultAgentSpec,
@@ -372,6 +433,43 @@ describe("PgChatStore", () => {
         agentSpec: defaultAgentSpec
       })
     ).rejects.toThrow(`Linked agent task not found for trigger message: ${triggerMessage.id}`);
+  });
+
+  it("throws a clear corruption error when a trigger message points to another task in the same session", async () => {
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Research Agent"
+    });
+    const firstTriggerMessage = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Run the first task.",
+      taskId: null
+    });
+    const secondTriggerMessage = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Run the second task.",
+      taskId: null
+    });
+
+    const firstTask = await store.createAgentTask({
+      chatSessionId: session.id,
+      triggerMessageId: firstTriggerMessage.id,
+      agentSpec: defaultAgentSpec
+    });
+
+    await pool.query("update chat_message set task_id = $2 where id = $1", [secondTriggerMessage.id, firstTask.id]);
+
+    await expect(
+      store.createAgentTask({
+        chatSessionId: session.id,
+        triggerMessageId: secondTriggerMessage.id,
+        agentSpec: defaultAgentSpec
+      })
+    ).rejects.toThrow(
+      `Corrupt trigger message link: chat_message ${secondTriggerMessage.id} points to task ${firstTask.id} for trigger ${firstTriggerMessage.id}`
+    );
   });
 
   it("enforces a single agent task per trigger message at the schema level", async () => {

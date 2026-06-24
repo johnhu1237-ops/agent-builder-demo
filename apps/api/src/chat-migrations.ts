@@ -109,30 +109,117 @@ async function createIndexIfNeeded(db: Queryable, indexName: string, sql: string
 async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
   const taskResult = await db.query<{
     id: string;
+    chat_session_id: string;
     trigger_message_id: string;
+    status: string;
+    result_markdown: string | null;
+    raw_output_redacted: string | null;
+    error: string | null;
+    completed_at: Date | string | null;
+    created_at: Date | string;
+    created_order: string | number | null;
   }>(`
-    select id, trigger_message_id
+    select
+      id,
+      chat_session_id,
+      trigger_message_id,
+      status,
+      result_markdown,
+      raw_output_redacted,
+      error,
+      completed_at,
+      created_at,
+      created_order
     from agent_tasks
-    order by trigger_message_id asc, created_at asc, created_order asc, id asc
+    order by trigger_message_id asc, chat_session_id asc, id asc
   `);
 
-  const canonicalByTrigger = new Map<string, string>();
-  const duplicateTaskIdsByCanonical = new Map<string, string[]>();
+  type AgentTaskRepairRow = (typeof taskResult.rows)[number];
+  const triggerKey = (row: AgentTaskRepairRow): string => `${row.chat_session_id}:${row.trigger_message_id}`;
+
+  const taskPriority = (row: AgentTaskRepairRow): number => {
+    const hasResultMarkdown = row.result_markdown != null && row.result_markdown.trim().length > 0;
+    const hasFailureDetails =
+      (row.error != null && row.error.trim().length > 0) ||
+      (row.raw_output_redacted != null && row.raw_output_redacted.trim().length > 0);
+
+    if (row.status === "completed" && hasResultMarkdown) {
+      return 1;
+    }
+    if ((row.status === "failed" || row.status === "timed_out") && hasFailureDetails) {
+      return 2;
+    }
+    if (["completed", "failed", "timed_out", "cancelled"].includes(row.status)) {
+      return 3;
+    }
+    if (row.status === "running") {
+      return 4;
+    }
+    return 5;
+  };
+
+  const compareNullableDate = (left: Date | string | null, right: Date | string | null): number => {
+    if (left == null && right == null) {
+      return 0;
+    }
+    if (left == null) {
+      return 1;
+    }
+    if (right == null) {
+      return -1;
+    }
+    return new Date(left).getTime() - new Date(right).getTime();
+  };
+
+  const compareNullableNumber = (left: string | number | null, right: string | number | null): number => {
+    if (left == null && right == null) {
+      return 0;
+    }
+    if (left == null) {
+      return 1;
+    }
+    if (right == null) {
+      return -1;
+    }
+    return Number(left) - Number(right);
+  };
+
+  const compareCanonicalCandidates = (left: AgentTaskRepairRow, right: AgentTaskRepairRow): number => {
+    return (
+      taskPriority(left) - taskPriority(right) ||
+      compareNullableDate(left.completed_at, right.completed_at) ||
+      new Date(left.created_at).getTime() - new Date(right.created_at).getTime() ||
+      compareNullableNumber(left.created_order, right.created_order) ||
+      left.id.localeCompare(right.id)
+    );
+  };
+
+  const canonicalTaskByTriggerKey = new Map<string, AgentTaskRepairRow>();
+  const duplicateTaskIdsByTriggerKey = new Map<string, string[]>();
 
   for (const row of taskResult.rows) {
-    const canonicalTaskId = canonicalByTrigger.get(row.trigger_message_id);
+    const key = triggerKey(row);
+    const currentCanonical = canonicalTaskByTriggerKey.get(key);
 
-    if (canonicalTaskId == null) {
-      canonicalByTrigger.set(row.trigger_message_id, row.id);
+    if (currentCanonical == null) {
+      canonicalTaskByTriggerKey.set(key, row);
       continue;
     }
 
-    const duplicateTaskIds = duplicateTaskIdsByCanonical.get(canonicalTaskId) ?? [];
+    if (compareCanonicalCandidates(row, currentCanonical) < 0) {
+      const duplicateTaskIds = duplicateTaskIdsByTriggerKey.get(key) ?? [];
+      duplicateTaskIds.push(currentCanonical.id);
+      duplicateTaskIdsByTriggerKey.set(key, duplicateTaskIds);
+      canonicalTaskByTriggerKey.set(key, row);
+      continue;
+    }
+
+    const duplicateTaskIds = duplicateTaskIdsByTriggerKey.get(key) ?? [];
     duplicateTaskIds.push(row.id);
-    duplicateTaskIdsByCanonical.set(canonicalTaskId, duplicateTaskIds);
+    duplicateTaskIdsByTriggerKey.set(key, duplicateTaskIds);
   }
 
-  for (const [triggerMessageId, canonicalTaskId] of canonicalByTrigger) {
+  for (const canonicalTask of canonicalTaskByTriggerKey.values()) {
     await db.query(
       `
         update chat_message
@@ -141,10 +228,10 @@ async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
           and role = 'user'
           and (task_id is null or task_id <> $2)
       `,
-      [triggerMessageId, canonicalTaskId]
+      [canonicalTask.trigger_message_id, canonicalTask.id]
     );
 
-    const duplicateTaskIds = duplicateTaskIdsByCanonical.get(canonicalTaskId) ?? [];
+    const duplicateTaskIds = duplicateTaskIdsByTriggerKey.get(triggerKey(canonicalTask)) ?? [];
     if (duplicateTaskIds.length === 0) {
       continue;
     }
@@ -155,12 +242,12 @@ async function repairAgentTaskTriggerLinks(db: Queryable): Promise<void> {
         set task_id = $2
         where task_id = any($1::text[])
       `,
-      [duplicateTaskIds, canonicalTaskId]
+      [duplicateTaskIds, canonicalTask.id]
     );
   }
 
   // v0.1.1 accepts deleting duplicate task rows because task_message cascades with the task.
-  for (const duplicateTaskIds of duplicateTaskIdsByCanonical.values()) {
+  for (const duplicateTaskIds of duplicateTaskIdsByTriggerKey.values()) {
     for (const duplicateTaskId of duplicateTaskIds) {
       await db.query("delete from agent_tasks where id = $1", [duplicateTaskId]);
     }

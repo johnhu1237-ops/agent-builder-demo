@@ -198,6 +198,15 @@ function isTerminalTaskStatus(status: AgentTaskStatus): boolean {
   return terminalTaskStatuses.has(status);
 }
 
+function isUniqueTriggerTaskInsertError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: unknown; constraint?: unknown };
+  return candidate.code === "23505" && candidate.constraint === "uq_agent_tasks_trigger_message_id";
+}
+
 async function getTaskById(db: Queryable, taskId: string): Promise<AgentTaskRow | null> {
   const result = await db.query<AgentTaskRow>(
     `
@@ -213,6 +222,12 @@ async function getTaskById(db: Queryable, taskId: string): Promise<AgentTaskRow 
 
 function missingTriggerMessageError(triggerMessageId: string, chatSessionId: string): Error {
   return new Error(`Trigger message ${triggerMessageId} was not found in chat session ${chatSessionId}`);
+}
+
+function linkedTaskCorruptionError(triggerMessageId: string, linkedTaskId: string, linkedTaskTriggerMessageId: string): Error {
+  return new Error(
+    `Corrupt trigger message link: chat_message ${triggerMessageId} points to task ${linkedTaskId} for trigger ${linkedTaskTriggerMessageId}`
+  );
 }
 
 export class PgChatStore {
@@ -385,6 +400,13 @@ export class PgChatStore {
         );
 
         if (existingTaskResult.rows[0]) {
+          if (existingTaskResult.rows[0].trigger_message_id !== input.triggerMessageId) {
+            throw linkedTaskCorruptionError(
+              input.triggerMessageId,
+              existingTaskId,
+              existingTaskResult.rows[0].trigger_message_id
+            );
+          }
           await client.query("commit");
           return mapAgentTask(existingTaskResult.rows[0]);
         }
@@ -406,6 +428,10 @@ export class PgChatStore {
         );
         taskRow = result.rows[0];
       } catch (error) {
+        if (!isUniqueTriggerTaskInsertError(error)) {
+          throw error;
+        }
+
         const existingTaskResult = await client.query<AgentTaskRow>(
           `
             select *
