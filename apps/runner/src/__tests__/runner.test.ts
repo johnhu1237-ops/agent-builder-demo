@@ -245,3 +245,99 @@ describe("e2b sandbox", () => {
     expect(result.resumeError?.message).toContain("sandbox not found");
   });
 });
+
+import { runE2BAgentTask } from "../e2b-runner";
+
+describe("e2b runner", () => {
+  it("runs a first-turn E2B task with command-scoped model envs and pauses the sandbox", async () => {
+    const emitted: string[] = [];
+    const sandbox = fakeSandbox("sandbox-1");
+    const runCalls: Array<{ command: string; opts: any }> = [];
+    sandbox.commands.run = async (command, opts) => {
+      runCalls.push({ command, opts });
+      await opts?.onStdout?.(JSON.stringify({ session_id: "codex-session-1" }) + "\n");
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    sandbox.files.read = async (path) => {
+      expect(path).toBe("/home/user/workspace/final.md");
+      return "# Final answer";
+    };
+    sandbox.pause = async () => {
+      emitted.push("paused");
+    };
+
+    const result = await runE2BAgentTask(
+      {
+        chatSessionId: "chat-session-1",
+        taskId: "task-1",
+        message: "Research Acme.",
+        agentSpec: defaultAgentSpec,
+        runtimeSecrets: { apiKey: "sk-test" },
+        sessionId: null,
+        workDir: null,
+        runnerEvents: null
+      },
+      {
+        timeoutMs: 120000,
+        templateId: "template-1",
+        factory: {
+          create: async () => sandbox,
+          connect: async () => {
+            throw new Error("connect should not run");
+          }
+        },
+        emitEvent: async (event) => {
+          emitted.push(event.content);
+        }
+      }
+    );
+
+    expect(result.status).toBe("completed");
+    expect(result.finalMarkdown).toBe("# Final answer");
+    expect(result.sessionId).toBe("codex-session-1");
+    expect(result.workDir).toBe("sandbox-1");
+    expect(runCalls[0].opts.envs).toEqual({
+      OPENAI_API_KEY: "sk-test",
+      OPENAI_BASE_URL: defaultAgentSpec.model.apiEndpoint
+    });
+    expect(runCalls[0].opts.envs).not.toHaveProperty("E2B_API_KEY");
+    expect(emitted).toContain("Codex session established");
+    expect(emitted).toContain("paused");
+  });
+
+  it("resets session pointer when workspace loss creates a fresh sandbox", async () => {
+    const sandbox = fakeSandbox("sandbox-fresh");
+    sandbox.commands.run = async (_command, opts) => {
+      await opts?.onStdout?.(JSON.stringify({ session_id: "codex-session-fresh" }) + "\n");
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+
+    const result = await runE2BAgentTask(
+      {
+        chatSessionId: "chat-session-1",
+        taskId: "task-1",
+        message: "Continue.",
+        agentSpec: defaultAgentSpec,
+        runtimeSecrets: { apiKey: "sk-test" },
+        sessionId: "codex-session-old",
+        workDir: "sandbox-lost",
+        runnerEvents: null
+      },
+      {
+        timeoutMs: 120000,
+        templateId: "template-1",
+        factory: {
+          create: async () => sandbox,
+          connect: async () => {
+            throw new Error("sandbox not found");
+          }
+        },
+        emitEvent: async () => undefined
+      }
+    );
+
+    expect(result.sessionId).toBe("codex-session-fresh");
+    expect(result.workDir).toBe("sandbox-fresh");
+    expect(JSON.stringify(result)).not.toContain("codex-session-old");
+  });
+});
