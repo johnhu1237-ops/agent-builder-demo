@@ -66,3 +66,52 @@ describe("runner adapters", () => {
     expect(workDir).toBe("/tmp/agent-builder-demo-runner/chat-session-1");
   });
 });
+
+import { createRunnerEventEmitter } from "../runner-events-client";
+
+describe("runner event client", () => {
+  it("posts redacted incremental task events when runnerEvents is configured", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const emitEvent = createRunnerEventEmitter({
+      taskId: "task-1",
+      runnerEvents: {
+        endpoint: "http://api.internal/internal/runner/task-events",
+        token: "runner-token"
+      },
+      secretValues: ["sk-test"],
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return new Response(JSON.stringify({ ok: true }), { status: 202 });
+      }
+    });
+
+    await emitEvent({ type: "status", tool: null, content: "started sk-test", inputJson: null, output: null });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://api.internal/internal/runner/task-events");
+    expect(calls[0].init.headers).toEqual({
+      authorization: "Bearer runner-token",
+      "content-type": "application/json"
+    });
+    expect(String(calls[0].init.body)).not.toContain("sk-test");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      taskId: "task-1",
+      messages: [{ type: "status", tool: null, content: "started [REDACTED]", inputJson: null, output: null }]
+    });
+  });
+
+  it("no-ops incremental task events without runnerEvents or taskId", async () => {
+    const emitEvent = createRunnerEventEmitter({
+      taskId: undefined,
+      runnerEvents: null,
+      secretValues: ["sk-test"],
+      fetchImpl: async () => {
+        throw new Error("fetch should not be called");
+      }
+    });
+
+    await expect(
+      emitEvent({ type: "status", tool: null, content: "local only", inputJson: null, output: null })
+    ).resolves.toBeUndefined();
+  });
+});
