@@ -248,6 +248,23 @@ describe("e2b sandbox", () => {
 
 import { runE2BAgentTask } from "../e2b-runner";
 
+it("keeps fake runner deterministic after runner contract expansion", async () => {
+  const result = await runFakeAgentTask({
+    chatSessionId: "chat-session-1",
+    taskId: "task-1",
+    agentSpec: defaultAgentSpec,
+    runtimeSecrets: { apiKey: "sk-test" },
+    message: "Research Acme Corp.",
+    sessionId: null,
+    workDir: null,
+    runnerEvents: null
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.sessionId).toBe("fake-session-chat-session-1");
+  expect(JSON.stringify(result)).not.toContain("sk-test");
+});
+
 describe("e2b runner", () => {
   it("runs a first-turn E2B task with command-scoped model envs and pauses the sandbox", async () => {
     const emitted: string[] = [];

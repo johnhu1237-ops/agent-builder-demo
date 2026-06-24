@@ -1,7 +1,7 @@
 import cors from "cors";
 import express from "express";
 import { validateAgentSpec, type CreateAgentTaskRequest } from "@agent-builder/shared";
-import { runCodexAgentTask } from "./codex-runner";
+import { runE2BAgentTask } from "./e2b-runner";
 import { runFakeAgentTask } from "./fake-runner";
 import { redactRunnerOutput } from "./redaction";
 
@@ -25,7 +25,6 @@ app.post("/agent-tasks", async (req, res) => {
     res.status(400).json({ error: validation.error.message });
     return;
   }
-
   if (!body.chatSessionId?.trim()) {
     res.status(400).json({ error: "chatSessionId is required" });
     return;
@@ -42,8 +41,8 @@ app.post("/agent-tasks", async (req, res) => {
   try {
     const request = { ...body, agentSpec: validation.data };
     const result =
-      runnerMode === "codex"
-        ? await runCodexAgentTask(request, timeoutMs)
+      runnerMode === "e2b"
+        ? await runE2BAgentTask(request, { timeoutMs, templateId: process.env.E2B_TEMPLATE_ID })
         : await runFakeAgentTask(request);
     res.json(result);
   } catch (error) {
