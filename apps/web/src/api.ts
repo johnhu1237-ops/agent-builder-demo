@@ -1,63 +1,88 @@
-import type { AgentSpec, ChatSession, ChatSessionDetail } from "@agent-builder/shared";
+import type { Agent, ChatSession, ChatSessionDetail } from "@agent-builder/shared";
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4001";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4001";
 
 async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetch(`${BASE_URL}${path}`, {
     ...options,
     headers: {
       "content-type": "application/json",
-      ...(options?.headers ?? {})
+      ...(options?.headers as Record<string, string> | undefined)
     }
   });
-
-  const body = await response.json().catch(() => null);
-
+  const body = await response.json();
   if (!response.ok) {
-    throw new Error(body?.error ?? `Request failed with ${response.status}`);
+    throw new Error(body.error ?? `Request failed with status ${response.status}`);
   }
-
   return body as T;
 }
 
-export function getDefaultAgent(): Promise<AgentSpec> {
-  return requestJson<AgentSpec>("/api/agent/default");
+// Agent CRUD
+
+export async function createAgent(input?: { spec?: unknown }): Promise<Agent> {
+  return requestJson<Agent>("/api/agents", {
+    method: "POST",
+    body: JSON.stringify(input ?? {})
+  });
 }
 
-export function saveDefaultAgent(agentSpec: AgentSpec): Promise<AgentSpec> {
-  return requestJson<AgentSpec>("/api/agent/default", {
+export async function listAgents(): Promise<Agent[]> {
+  return requestJson<Agent[]>("/api/agents");
+}
+
+export async function getAgent(id: string): Promise<Agent> {
+  return requestJson<Agent>(`/api/agents/${encodeURIComponent(id)}`);
+}
+
+export async function updateAgent(id: string, input: { spec: unknown }): Promise<Agent> {
+  return requestJson<Agent>(`/api/agents/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+// Default agent (kept for backward compat)
+
+export async function getDefaultAgent(): Promise<unknown> {
+  return requestJson<unknown>("/api/agent/default");
+}
+
+export async function saveDefaultAgent(agentSpec: unknown): Promise<unknown> {
+  return requestJson<unknown>("/api/agent/default", {
     method: "PUT",
     body: JSON.stringify(agentSpec)
   });
 }
 
-export function listChatSessions(): Promise<ChatSession[]> {
+// Chat Sessions
+
+export async function listChatSessions(): Promise<ChatSession[]> {
   return requestJson<ChatSession[]>("/api/chat-sessions");
 }
 
-export function createChatSession(input: { agentSpec: AgentSpec; title?: string }): Promise<ChatSession> {
+export async function createChatSession(input: { agentId: string; title?: string }): Promise<ChatSession> {
   return requestJson<ChatSession>("/api/chat-sessions", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify({ agentId: input.agentId, title: input.title })
   });
 }
 
-export function getChatSession(id: string): Promise<ChatSessionDetail> {
-  return requestJson<ChatSessionDetail>(`/api/chat-sessions/${id}`);
+export async function getChatSession(id: string): Promise<ChatSessionDetail> {
+  return requestJson<ChatSessionDetail>(`/api/chat-sessions/${encodeURIComponent(id)}`);
 }
 
-export function sendChatMessage(input: {
+// Message sending — no longer sends agentSpec (API fetches live spec from DB)
+
+export async function sendChatMessage(input: {
   chatSessionId: string;
-  agentSpec: AgentSpec;
   apiKey: string;
   message: string;
 }): Promise<ChatSessionDetail> {
-  return requestJson<ChatSessionDetail>(`/api/chat-sessions/${input.chatSessionId}/messages`, {
+  return requestJson<ChatSessionDetail>(`/api/chat-sessions/${encodeURIComponent(input.chatSessionId)}/messages`, {
     method: "POST",
     body: JSON.stringify({
-      agentSpec: input.agentSpec,
-      runtimeSecrets: { apiKey: input.apiKey },
-      message: input.message
+      message: input.message,
+      runtimeSecrets: { apiKey: input.apiKey }
     })
   });
 }
