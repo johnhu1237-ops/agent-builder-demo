@@ -6,68 +6,138 @@ import { defaultAgentSpec } from "@agent-builder/shared";
 import App from "../App";
 
 const fetchMock = vi.fn();
-const persistedAgentSpec = {
-  ...defaultAgentSpec,
-  identity: { ...defaultAgentSpec.identity, name: "Persisted Research Agent" }
-};
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}
+
+function agentFixture(overrides: Record<string, unknown> = {}) {
+  const ts = new Date().toISOString();
+  return {
+    id: "agent_1",
+    name: "Research Agent",
+    description: "Researches companies",
+    spec: defaultAgentSpec,
+    createdAt: ts,
+    updatedAt: ts,
+    ...overrides
+  };
+}
+
+function sessionFixture(overrides: Record<string, unknown> = {}) {
+  const ts = new Date().toISOString();
+  return {
+    id: "chat_1",
+    agentId: "agent_1",
+    agentName: "Research Agent",
+    agentSpecSnapshot: null,
+    lastMessagePreview: null,
+    title: "New Conversation",
+    sessionId: null,
+    workDir: null,
+    status: "active",
+    createdAt: ts,
+    updatedAt: ts,
+    ...overrides
+  };
+}
+
+function sessionDetailFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    ...sessionFixture(),
+    messages: [],
+    latestTask: null,
+    taskMessages: [],
+    ...overrides
+  };
+}
 
 beforeEach(() => {
   global.fetch = fetchMock;
   fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
-    if (url.endsWith("/api/agent/default") && options?.method !== "PUT") {
-      return jsonResponse(persistedAgentSpec);
+    const method = options?.method ?? "GET";
+
+    if (url.endsWith("/api/agents") && method === "POST") {
+      return jsonResponse(agentFixture(), 201);
     }
-    if (url.endsWith("/api/agent/default") && options?.method === "PUT") {
-      return jsonResponse(JSON.parse(String(options.body)));
+    if (url.endsWith("/api/agents") && method === "GET") {
+      return jsonResponse([agentFixture()]);
     }
-    if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
+    if (/\/api\/agents\/[^/]+$/.test(url) && method === "PUT") {
+      return jsonResponse(agentFixture({ name: "Updated", description: "Updated desc" }));
+    }
+    if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
+      return jsonResponse(agentFixture());
+    }
+
+    if (url.endsWith("/api/chat-sessions") && method === "POST") {
+      return jsonResponse(sessionFixture(), 201);
+    }
+    if (url.endsWith("/api/chat-sessions") && method === "GET") {
       return jsonResponse([]);
     }
-    if (url.endsWith("/api/chat-sessions") && options?.method === "POST") {
-      return jsonResponse({
-        id: "chat-session-1",
-        agentSpecSnapshot: defaultAgentSpec,
-        title: "Research Agent",
-        sessionId: null,
-        workDir: null,
-        status: "active",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }, 201);
+    if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+      return jsonResponse(sessionDetailFixture());
     }
-    if (url.endsWith("/api/chat-sessions/chat-session-1/messages")) {
-      return jsonResponse({
-        id: "chat-session-1",
-        agentSpecSnapshot: defaultAgentSpec,
-        title: "Research Agent",
-        sessionId: "fake-session-chat-session-1",
-        workDir: "/tmp/fake",
-        status: "active",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        messages: [
-          { id: "m1", chatSessionId: "chat-session-1", role: "user", contentMarkdown: "Research Acme.", taskId: "t1", createdAt: new Date().toISOString() },
-          { id: "m2", chatSessionId: "chat-session-1", role: "assistant", contentMarkdown: "# Research Report\n\nDone.", taskId: "t1", createdAt: new Date().toISOString() }
-        ],
-        latestTask: {
-          id: "t1",
-          chatSessionId: "chat-session-1",
-          triggerMessageId: "m1",
-          agentSpecSnapshot: defaultAgentSpec,
-          status: "completed",
-          sessionId: "fake-session-chat-session-1",
-          workDir: "/tmp/fake",
-          resultMarkdown: "# Research Report\n\nDone.",
-          rawOutputRedacted: "raw",
-          error: null,
-          createdAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString()
-        },
-        taskMessages: [{ id: "tm1", taskId: "t1", seq: 1, type: "status", tool: null, content: "Completed", inputJson: null, output: null, createdAt: new Date().toISOString() }]
-      }, 201);
+    if (/\/api\/chat-sessions\/[^/]+\/messages$/.test(url) && method === "POST") {
+      const body = options?.body ? JSON.parse(options.body as string) : {};
+      return jsonResponse(
+        sessionDetailFixture({
+          messages: [
+            {
+              id: "msg_1",
+              chatSessionId: "chat_1",
+              role: "user",
+              contentMarkdown: body.message ?? "",
+              taskId: "task_1",
+              createdAt: new Date().toISOString()
+            },
+            {
+              id: "msg_2",
+              chatSessionId: "chat_1",
+              role: "assistant",
+              contentMarkdown: "# Result\n\nDone.",
+              taskId: "task_1",
+              createdAt: new Date().toISOString()
+            }
+          ],
+          latestTask: {
+            id: "task_1",
+            chatSessionId: "chat_1",
+            triggerMessageId: "msg_1",
+            agentSpecSnapshot: defaultAgentSpec,
+            status: "completed",
+            sessionId: null,
+            workDir: null,
+            resultMarkdown: "# Result\n\nDone.",
+            rawOutputRedacted: "raw",
+            error: null,
+            createdAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString()
+          },
+          taskMessages: [
+            {
+              id: "tm_1",
+              taskId: "task_1",
+              seq: 1,
+              type: "status",
+              tool: null,
+              content: "Completed",
+              inputJson: null,
+              output: null,
+              createdAt: new Date().toISOString()
+            }
+          ]
+        }),
+        201
+      );
     }
-    return jsonResponse(defaultAgentSpec);
+
+    if (url.endsWith("/api/agent/default")) {
+      return jsonResponse(defaultAgentSpec);
+    }
+    return jsonResponse(null, 404);
   });
 });
 
@@ -75,249 +145,95 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("App chat workbench", () => {
-  it("loads the saved default agent configuration on startup", async () => {
+describe("multi-agent UI", () => {
+  it("shows an accordion sidebar with Agents and Chats sections", async () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Agent name")).toHaveValue("Persisted Research Agent");
-    });
-    expect(screen.queryByLabelText("Persona")).not.toBeInTheDocument();
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/agent/default"),
-      expect.any(Object)
-    );
-  });
-
-  it("organizes agent configuration into tabs", async () => {
-    render(<App />);
-    const user = userEvent.setup();
-
-    expect(screen.getByLabelText("Agent name")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Model name")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Model" }));
-
-    expect(screen.getByLabelText("Model name")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Agent name")).not.toBeInTheDocument();
-  });
-
-  it("separates tools into apps, skills, and abilities subtabs", async () => {
-    render(<App />);
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("tab", { name: "Tools" }));
-
-    expect(screen.getByRole("tab", { name: "Apps" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByText(/mock apps enabled/)).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Skills" })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Skills" }));
-
-    expect(screen.getByRole("tab", { name: "Skills" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("heading", { name: "Skills" })).toBeInTheDocument();
-    expect(screen.queryByText(/mock apps enabled/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Abilities" }));
-
-    expect(screen.getByRole("tab", { name: "Abilities" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("heading", { name: "Abilities" })).toBeInTheDocument();
-    expect(screen.getAllByText("Enabled").length).toBeGreaterThan(0);
-  });
-
-  it("uses switch controls for enabling apps and skills", async () => {
-    render(<App />);
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("tab", { name: "Tools" }));
-    const appSwitches = screen.getAllByRole("switch");
-
-    expect(appSwitches).toHaveLength(3);
-    expect(appSwitches[0]).toHaveAttribute("aria-checked", "false");
-
-    await user.click(appSwitches[0]);
-
-    expect(appSwitches[0]).toHaveAttribute("aria-checked", "true");
-
-    await user.click(screen.getByRole("tab", { name: "Skills" }));
-    const skillSwitches = screen.getAllByRole("switch");
-
-    expect(skillSwitches).toHaveLength(3);
-    expect(skillSwitches[0]).toHaveAttribute("aria-checked", "true");
-  });
-
-  it("saves the current agent configuration as the default agent", async () => {
-    render(<App />);
-    const user = userEvent.setup();
-
-    await waitFor(() => {
-      expect(screen.getByLabelText("Agent name")).toHaveValue("Persisted Research Agent");
-    });
-    await user.clear(screen.getByLabelText("Agent name"));
-    await user.type(screen.getByLabelText("Agent name"), "Saved Research Agent");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Saved")).toBeInTheDocument();
-    });
-
-    const saveCall = fetchMock.mock.calls.find(
-      ([url, options]) => String(url).endsWith("/api/agent/default") && options?.method === "PUT"
-    );
-
-    expect(saveCall).toBeDefined();
-    expect(JSON.parse(String(saveCall?.[1]?.body)).identity.name).toBe("Saved Research Agent");
-  });
-
-  it("sends a chat message and renders assistant Markdown", async () => {
-    render(<App />);
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("tab", { name: "Model" }));
-    await user.type(screen.getByLabelText("API key"), "sk-test");
-    await user.clear(screen.getByLabelText("Message"));
-    await user.type(screen.getByLabelText("Message"), "Research Acme.");
-    await user.click(screen.getByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Research Acme.")).toBeInTheDocument();
-      expect(screen.getByRole("heading", { name: "Research Report" })).toBeInTheDocument();
-      expect(screen.getByText("Completed")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Agents/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Chats/ })).toBeInTheDocument();
     });
   });
 
-  it("shows validation errors before sending", async () => {
-    render(<App />);
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("button", { name: "Send" }));
-
-    expect(screen.getByText("API key is required")).toBeInTheDocument();
-  });
-
-  it("lists prior chat sessions in the sidebar with relative time", async () => {
-    const old = new Date(Date.now() - 5 * 60_000).toISOString();
-    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
-      if (url.endsWith("/api/agent/default")) return jsonResponse(persistedAgentSpec);
-      if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
-        return jsonResponse([
-          { id: "chat-session-1", agentSpecSnapshot: defaultAgentSpec, title: "First session", sessionId: null, workDir: null, status: "active", createdAt: old, updatedAt: old }
-        ]);
-      }
-      return jsonResponse(defaultAgentSpec);
-    });
-
+  it("shows the empty workspace state when no agent or chat is selected", async () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText("First session")).toBeInTheDocument();
+      expect(screen.getByText(/select an agent to get started/i)).toBeInTheDocument();
     });
-    expect(screen.getByText(/5m ago/)).toBeInTheDocument();
   });
 
-  it("opens a session and renders its history when clicked", async () => {
-    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
-      if (url.endsWith("/api/agent/default")) return jsonResponse(persistedAgentSpec);
-      if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
-        return jsonResponse([
-          { id: "chat-session-1", agentSpecSnapshot: defaultAgentSpec, title: "First session", sessionId: null, workDir: null, status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-        ]);
-      }
-      if (url.endsWith("/api/chat-sessions/chat-session-1") && (!options || options.method === undefined)) {
-        return jsonResponse(sessionDetailFixture({ title: "First session" }));
-      }
-      return jsonResponse(defaultAgentSpec);
-    });
-
+  it("lists agents in the sidebar and allows selecting one", async () => {
     render(<App />);
     const user = userEvent.setup();
 
-    await user.click(await screen.findByText("First session"));
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
 
     await waitFor(() => {
-      expect(screen.getByText("Earlier question.")).toBeInTheDocument();
-      expect(screen.getByRole("heading", { name: "Earlier Report" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Agent name")).toBeInTheDocument();
     });
   });
 
-  it("clears the active session and message input on New chat", async () => {
+  it("creates a new chat for the selected agent", async () => {
     render(<App />);
     const user = userEvent.setup();
 
-    expect(screen.getByLabelText("Message")).toHaveValue("Research RunwayML and produce a concise company profile.");
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
 
-    await user.click(screen.getByRole("button", { name: "+ New chat" }));
-
-    expect(screen.getByLabelText("Message")).toHaveValue("");
-    expect(screen.getByText("Start the conversation with the configured Research Agent.")).toBeInTheDocument();
-  });
-
-  it("resumes the selected session when sending instead of creating a new one", async () => {
-    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
-      if (url.endsWith("/api/agent/default")) return jsonResponse(persistedAgentSpec);
-      if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
-        return jsonResponse([
-          { id: "chat-session-1", agentSpecSnapshot: defaultAgentSpec, title: "First session", sessionId: "fake-session-chat-session-1", workDir: "/tmp/fake", status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-        ]);
-      }
-      if (url.endsWith("/api/chat-sessions/chat-session-1") && (!options || options.method === undefined)) {
-        return jsonResponse(sessionDetailFixture({ title: "First session" }));
-      }
-      if (url.endsWith("/api/chat-sessions/chat-session-1/messages")) {
-        return jsonResponse(sessionDetailFixture({ title: "First session" }), 201);
-      }
-      return jsonResponse(defaultAgentSpec);
-    });
-
-    render(<App />);
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByText("First session"));
-    await screen.findByText("Earlier question.");
-
-    await user.click(screen.getByRole("tab", { name: "Model" }));
-    await user.type(screen.getByLabelText("API key"), "sk-test");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
 
     await waitFor(() => {
-      const sentResume = fetchMock.mock.calls.some(
-        ([u, o]) => String(u).endsWith("/api/chat-sessions/chat-session-1/messages") && o?.method === "POST"
+      expect(screen.getByLabelText("Message")).toBeInTheDocument();
+    });
+  });
+
+  it("sends a message without agentSpec in the request body", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Hello");
+
+    await user.type(screen.getByLabelText("API Key"), "sk-test");
+
+    const sendBtn = screen.getByRole("button", { name: /^Send$/ });
+    await user.click(sendBtn);
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
+      const messageCall = calls.find(
+        (c) => typeof c[0] === "string" && c[0].includes("/messages") && c[1]?.method === "POST"
       );
-      expect(sentResume).toBe(true);
+      expect(messageCall).toBeTruthy();
+      const body = JSON.parse(messageCall![1]!.body as string);
+      expect(body.agentSpec).toBeUndefined();
+      expect(body.runtimeSecrets.apiKey).toBe("sk-test");
     });
-    const createdNew = fetchMock.mock.calls.some(
-      ([u, o]) => String(u).endsWith("/api/chat-sessions") && o?.method === "POST"
-    );
-    expect(createdNew).toBe(false);
+  });
+
+  it("switches between agent config and chat views", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toBeInTheDocument());
+
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeInTheDocument());
+
+    const agentButtonAgain = screen.getByRole("button", { name: /Research Agent/ });
+    await user.click(agentButtonAgain);
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toBeInTheDocument());
   });
 });
-
-function sessionDetailFixture(overrides: Partial<Record<string, unknown>> = {}) {
-  const ts = new Date().toISOString();
-  return {
-    id: "chat-session-1",
-    agentSpecSnapshot: defaultAgentSpec,
-    title: "Research Agent",
-    sessionId: "fake-session-chat-session-1",
-    workDir: "/tmp/fake",
-    status: "active",
-    createdAt: ts,
-    updatedAt: ts,
-    messages: [
-      { id: "m1", chatSessionId: "chat-session-1", role: "user", contentMarkdown: "Earlier question.", taskId: "t1", createdAt: ts },
-      { id: "m2", chatSessionId: "chat-session-1", role: "assistant", contentMarkdown: "# Earlier Report\n\nDone.", taskId: "t1", createdAt: ts }
-    ],
-    latestTask: null,
-    taskMessages: [],
-    ...overrides
-  };
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body
-  } as Response;
-}
