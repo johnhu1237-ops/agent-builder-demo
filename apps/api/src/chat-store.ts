@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   defaultAgentSpec,
   exportAgentSpec,
+  type Agent,
   type AgentSpec,
   type AgentTask,
   type AgentTaskStatus,
@@ -19,7 +20,10 @@ type Queryable = Pool | PoolClient;
 
 type ChatSessionRow = {
   id: string;
-  agent_spec_snapshot: AgentSpec;
+  agent_id: string;
+  agent_name: string;
+  agent_spec_snapshot: AgentSpec | null;
+  last_message_preview: string | null;
   title: string;
   session_id: string | null;
   work_dir: string | null;
@@ -65,6 +69,15 @@ type TaskMessageRow = {
   created_at: Date | string;
 };
 
+type AgentRow = {
+  id: string;
+  name: string;
+  description: string;
+  spec: AgentSpec;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
 
 type CompleteAgentTaskInput = {
@@ -95,7 +108,10 @@ function toIsoString(value: Date | string | null): string | null {
 function mapChatSession(row: ChatSessionRow): ChatSession {
   return {
     id: row.id,
+    agentId: row.agent_id,
+    agentName: row.agent_name,
     agentSpecSnapshot: row.agent_spec_snapshot,
+    lastMessagePreview: row.last_message_preview,
     title: row.title,
     sessionId: row.session_id,
     workDir: row.work_dir,
@@ -145,6 +161,17 @@ function mapTaskMessage(row: TaskMessageRow): TaskMessage {
     inputJson: row.input_json,
     output: row.output,
     createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString()
+  };
+}
+
+function mapAgent(row: AgentRow): Agent {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    spec: row.spec,
+    createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
+    updatedAt: toIsoString(row.updated_at) ?? new Date(0).toISOString()
   };
 }
 
@@ -347,17 +374,134 @@ export class PgChatStore {
     return snapshot;
   }
 
-  async createChatSession(input: { agentSpec: AgentSpec; title: string }): Promise<ChatSession> {
-    const result = await this.pool.query<ChatSessionRow>(
+  async createAgent(input: { spec?: AgentSpec }): Promise<Agent> {
+    const spec = input.spec ?? defaultAgentSpec;
+    const sanitized = exportAgentSpec(spec);
+    const name = spec.identity.name;
+    const description = spec.identity.description;
+
+    const result = await this.pool.query<AgentRow>(
       `
-        insert into chat_session (id, agent_spec_snapshot, title, status)
-        values ($1, $2, $3, 'active')
+        insert into agents (id, name, description, spec)
+        values ($1, $2, $3, $4)
         returning *
       `,
-      [nanoid(), exportAgentSpec(input.agentSpec), input.title]
+      [nanoid(), name, description, sanitized]
+    );
+
+    return mapAgent(result.rows[0]);
+  }
+
+  async getAgent(id: string): Promise<Agent | null> {
+    const result = await this.pool.query<AgentRow>(
+      `
+        select *
+        from agents
+        where id = $1
+      `,
+      [id]
+    );
+
+    if (!result.rows[0]) return null;
+    return mapAgent(result.rows[0]);
+  }
+
+  async listAgents(): Promise<Agent[]> {
+    const result = await this.pool.query<AgentRow>(
+      `
+        select *
+        from agents
+        order by created_at asc, id asc
+      `
+    );
+
+    return result.rows.map(mapAgent);
+  }
+
+  async updateAgent(id: string, input: { spec: AgentSpec }): Promise<Agent> {
+    const spec = input.spec;
+    const sanitized = exportAgentSpec(spec);
+    const name = spec.identity.name;
+    const description = spec.identity.description;
+
+    const result = await this.pool.query<AgentRow>(
+      `
+        update agents
+        set name = $2,
+            description = $3,
+            spec = $4,
+            updated_at = now()
+        where id = $1
+        returning *
+      `,
+      [id, name, description, sanitized]
+    );
+
+    if (!result.rows[0]) {
+      throw new Error(`Agent not found: ${id}`);
+    }
+
+    return mapAgent(result.rows[0]);
+  }
+
+  async createChatSession(
+    input:
+      | { agentId: string; title?: string }
+      | { agentSpec: AgentSpec; title: string }
+  ): Promise<ChatSession> {
+    if ("agentId" in input) {
+      const agentResult = await this.pool.query<AgentRow>(
+        `select id, name from agents where id = $1`,
+        [input.agentId]
+      );
+
+      if (!agentResult.rows[0]) {
+        throw new Error(`Agent not found: ${input.agentId}`);
+      }
+
+      const agentName = agentResult.rows[0].name;
+      const title = input.title ?? agentName;
+
+      const result = await this.pool.query<ChatSessionRow>(
+        `
+          insert into chat_session (id, agent_id, agent_name, agent_spec_snapshot, title, status)
+          values ($1, $2, $3, null, $4, 'active')
+          returning *
+        `,
+        [nanoid(), input.agentId, agentName, title]
+      );
+
+      return mapChatSession(result.rows[0]);
+    }
+
+    const sanitizedSpec = exportAgentSpec(input.agentSpec);
+    const fallbackAgentId = await this.ensureDefaultAgent(sanitizedSpec);
+    const fallbackAgentName = sanitizedSpec.identity.name;
+
+    const result = await this.pool.query<ChatSessionRow>(
+      `
+        insert into chat_session (id, agent_id, agent_name, agent_spec_snapshot, title, status)
+        values ($1, $2, $3, $4, $5, 'active')
+        returning *
+      `,
+      [nanoid(), fallbackAgentId, fallbackAgentName, sanitizedSpec, input.title]
     );
 
     return mapChatSession(result.rows[0]);
+  }
+
+  private async ensureDefaultAgent(spec: AgentSpec): Promise<string> {
+    const existing = await this.pool.query<{ id: string }>(
+      `select id from agents where id = 'default'`
+    );
+    if (existing.rows[0]) {
+      return existing.rows[0].id;
+    }
+    await this.pool.query(
+      `insert into agents (id, name, description, spec) values ($1, $2, $3, $4)`,
+      ["default", spec.identity.name, spec.identity.description, spec]
+    );
+    return "default";
   }
 
   async listChatSessions(): Promise<ChatSession[]> {

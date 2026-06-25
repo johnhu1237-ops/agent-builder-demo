@@ -1,6 +1,10 @@
 import { newDb } from "pg-mem";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { defaultAgentSpec } from "@agent-builder/shared";
+import {
+  defaultAgentSpec,
+  type CreateAgentRequest,
+  type UpdateAgentRequest
+} from "@agent-builder/shared";
 import { runChatMigrations } from "../chat-migrations";
 import { PgChatStore } from "../chat-store";
 
@@ -1170,5 +1174,133 @@ describe("PgChatStore", () => {
     const detail = await store.getChatSessionDetail(session.id);
     expect(detail?.sessionId).toBe("codex-session-old");
     expect(detail?.workDir).toBe("sandbox-old");
+  });
+
+  describe("agent CRUD", () => {
+    it("creates an agent deriving name and description from spec", async () => {
+      const input: CreateAgentRequest = { spec: defaultAgentSpec };
+      const agent = await store.createAgent(input);
+
+      expect(agent.id).toBeTruthy();
+      expect(agent.name).toBe(defaultAgentSpec.identity.name);
+      expect(agent.description).toBe(defaultAgentSpec.identity.description);
+      expect(agent.spec.identity.name).toBe(defaultAgentSpec.identity.name);
+      expect(agent.createdAt).toBeTruthy();
+      expect(agent.updatedAt).toBeTruthy();
+    });
+
+    it("creates an agent with a default spec when no spec is provided", async () => {
+      const input: CreateAgentRequest = {};
+      const agent = await store.createAgent(input);
+
+      expect(agent.name).toBe(defaultAgentSpec.identity.name);
+      expect(agent.spec.version).toBe("0.1");
+    });
+
+    it("gets an agent by id", async () => {
+      const created = await store.createAgent({ spec: defaultAgentSpec });
+      const agent = await store.getAgent(created.id);
+
+      expect(agent).not.toBeNull();
+      expect(agent!.id).toBe(created.id);
+      expect(agent!.name).toBe(defaultAgentSpec.identity.name);
+    });
+
+    it("returns null for a missing agent", async () => {
+      const agent = await store.getAgent("nonexistent");
+      expect(agent).toBeNull();
+    });
+
+    it("lists all agents ordered by created_at", async () => {
+      await store.createAgent({
+        spec: {
+          ...defaultAgentSpec,
+          identity: { ...defaultAgentSpec.identity, name: "Agent A" }
+        }
+      });
+      await store.createAgent({
+        spec: {
+          ...defaultAgentSpec,
+          identity: { ...defaultAgentSpec.identity, name: "Agent B" }
+        }
+      });
+
+      const agents = await store.listAgents();
+      expect(agents.length).toBeGreaterThanOrEqual(2);
+      const names = agents.map((a) => a.name);
+      expect(names).toContain("Agent A");
+      expect(names).toContain("Agent B");
+    });
+
+    it("updates an agent spec, re-deriving name and description", async () => {
+      const created = await store.createAgent({ spec: defaultAgentSpec });
+      const newSpec = {
+        ...defaultAgentSpec,
+        identity: { name: "Updated Agent", description: "Updated description" }
+      };
+      const input: UpdateAgentRequest = { spec: newSpec };
+      const updated = await store.updateAgent(created.id, input);
+
+      expect(updated.name).toBe("Updated Agent");
+      expect(updated.description).toBe("Updated description");
+      expect(updated.spec.identity.name).toBe("Updated Agent");
+    });
+
+    it("throws when updating a nonexistent agent", async () => {
+      const input: UpdateAgentRequest = { spec: defaultAgentSpec };
+      await expect(store.updateAgent("nonexistent", input)).rejects.toThrow("not found");
+    });
+
+    it("does not leak apiKey in stored spec", async () => {
+      const specWithKey = {
+        ...defaultAgentSpec,
+        model: { ...defaultAgentSpec.model, apiKey: "sk-secret" }
+      };
+      const agent = await store.createAgent({ spec: specWithKey });
+
+      const stored = await pool.query<{ spec: unknown }>(
+        `select spec from agents where id = $1`,
+        [agent.id]
+      );
+      const storedSpec = stored.rows[0].spec as Record<string, unknown>;
+      const storedModel = storedSpec.model as Record<string, unknown>;
+      expect(storedModel.apiKey).toBeUndefined();
+    });
+  });
+
+  describe("agent-bound session creation", () => {
+    it("creates a chat session bound to an agent id with null spec snapshot", async () => {
+      const agent = await store.createAgent({ spec: defaultAgentSpec });
+      const session = await store.createChatSession({ agentId: agent.id, title: "Test chat" });
+
+      expect(session.agentId).toBe(agent.id);
+      expect(session.agentName).toBe(agent.name);
+      expect(session.agentSpecSnapshot).toBeNull();
+      expect(session.title).toBe("Test chat");
+      expect(session.status).toBe("active");
+    });
+
+    it("defaults the title to the agent name when not provided", async () => {
+      const agent = await store.createAgent({ spec: defaultAgentSpec });
+      const session = await store.createChatSession({ agentId: agent.id });
+
+      expect(session.title).toBe(agent.name);
+    });
+
+    it("throws when creating a session for a nonexistent agent", async () => {
+      await expect(store.createChatSession({ agentId: "nonexistent" })).rejects.toThrow("not found");
+    });
+
+    it("lists sessions with agentId, agentName, and lastMessagePreview", async () => {
+      const agent = await store.createAgent({ spec: defaultAgentSpec });
+      await store.createChatSession({ agentId: agent.id, title: "List test" });
+
+      const sessions = await store.listChatSessions();
+      const session = sessions.find((s) => s.title === "List test");
+      expect(session).toBeDefined();
+      expect(session!.agentId).toBe(agent.id);
+      expect(session!.agentName).toBe(agent.name);
+      expect(session!.lastMessagePreview).toBeNull();
+    });
   });
 });
