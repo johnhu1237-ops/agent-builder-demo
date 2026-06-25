@@ -7,7 +7,10 @@ export type TaskMessageType = "status" | "text" | "tool_use" | "tool_result" | "
 
 export type ChatSession = {
   id: string;
-  agentSpecSnapshot: AgentSpec;
+  agentId: string;
+  agentName: string;
+  agentSpecSnapshot: AgentSpec | null;
+  lastMessagePreview: string | null;
   title: string;
   sessionId: string | null;
   workDir: string | null;
@@ -60,13 +63,12 @@ export type ChatSessionDetail = ChatSession & {
 };
 
 export type CreateChatSessionRequest = {
-  agentSpec: AgentSpec;
+  agentId: string;
   title?: string;
 };
 
 export type SendChatMessageRequest = {
   message: string;
-  agentSpec: AgentSpec;
   runtimeSecrets: {
     apiKey: string;
   };
