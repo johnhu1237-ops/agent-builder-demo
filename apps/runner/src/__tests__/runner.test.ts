@@ -118,6 +118,7 @@ describe("e2b command", () => {
     });
 
     expect(command).toContain("exec resume 'codex-session-1' --full-auto --skip-git-repo-check --json");
+    expect(command).not.toContain("-C ");
   });
 });
 
@@ -140,6 +141,7 @@ describe("e2b events", () => {
   it("extracts session ids from known Codex event variants", () => {
     expect(extractSessionIdFromCodexEvent({ session_id: "snake" })).toBe("snake");
     expect(extractSessionIdFromCodexEvent({ sessionId: "camel" })).toBe("camel");
+    expect(extractSessionIdFromCodexEvent({ thread_id: "thread-abc" })).toBe("thread-abc");
     expect(extractSessionIdFromCodexEvent({ type: "other" })).toBeNull();
   });
 });

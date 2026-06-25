@@ -10,7 +10,7 @@ export function extractSessionIdFromCodexEvent(event: unknown): string | null {
     return null;
   }
   const record = event as Record<string, unknown>;
-  const value = record.session_id ?? record.sessionId;
+  const value = record.session_id ?? record.sessionId ?? record.thread_id;
   return typeof value === "string" && value.trim() ? value : null;
 }
 

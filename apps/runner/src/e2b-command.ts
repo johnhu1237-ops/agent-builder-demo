@@ -14,8 +14,9 @@ function shellQuote(value: string): string {
 }
 
 export function buildCodexCommand(input: E2BCodexCommandInput): string {
-  const execArgs = input.sessionId ? `exec resume ${shellQuote(input.sessionId)}` : "exec";
-  return [
+  const isResume = Boolean(input.sessionId);
+  const execArgs = isResume ? `exec resume ${shellQuote(input.sessionId!)}` : "exec";
+  const parts = [
     "codex",
     execArgs,
     "--full-auto",
@@ -34,9 +35,11 @@ export function buildCodexCommand(input: E2BCodexCommandInput): string {
     "--model",
     shellQuote(input.modelName),
     "--output-last-message",
-    shellQuote(input.finalPath),
-    "-C",
-    shellQuote(input.workspacePath),
-    `"$(cat ${shellQuote(input.promptPath)})"`
-  ].join(" ");
+    shellQuote(input.finalPath)
+  ];
+  if (!isResume) {
+    parts.push("-C", shellQuote(input.workspacePath));
+  }
+  parts.push(`"$(cat ${shellQuote(input.promptPath)})"`);
+  return parts.join(" ");
 }
