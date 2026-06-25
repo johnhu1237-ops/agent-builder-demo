@@ -26,7 +26,11 @@ export type E2BSandboxLike = {
   kill: () => Promise<void>;
 };
 
+export type E2BSandboxRuntimeEnv = {
+  envs?: Record<string, string>;
+};
+
 export type E2BSandboxFactory = {
-  create: (templateId: string) => Promise<E2BSandboxLike>;
-  connect: (sandboxId: string) => Promise<E2BSandboxLike>;
+  create: (templateId: string, runtime?: E2BSandboxRuntimeEnv) => Promise<E2BSandboxLike>;
+  connect: (sandboxId: string, runtime?: E2BSandboxRuntimeEnv) => Promise<E2BSandboxLike>;
 };

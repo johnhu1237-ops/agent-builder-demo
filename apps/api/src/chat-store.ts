@@ -173,6 +173,20 @@ function pickMissingText(current: string | null, incoming: string | null): strin
 }
 
 async function insertTaskMessages(db: Queryable, taskId: string, messages: RunnerTaskMessage[]): Promise<void> {
+  if (messages.length === 0) {
+    return;
+  }
+
+  const nextSeqResult = await db.query<{ next_seq: number }>(
+    `
+      select coalesce(max(seq) + 1, 0) as next_seq
+      from task_message
+      where task_id = $1
+    `,
+    [taskId]
+  );
+  const startSeq = Number(nextSeqResult.rows[0]?.next_seq ?? 0);
+
   for (const [index, message] of messages.entries()) {
     const sanitizedMessage = redactTaskMessage(message);
     await db.query(
@@ -183,7 +197,7 @@ async function insertTaskMessages(db: Queryable, taskId: string, messages: Runne
       [
         nanoid(),
         taskId,
-        index,
+        startSeq + index,
         sanitizedMessage.type,
         sanitizedMessage.tool,
         sanitizedMessage.content,
@@ -614,15 +628,6 @@ export class PgChatStore {
         throw new Error(`Cannot append task messages to terminal task: ${taskId}`);
       }
 
-      const nextSeqResult = await client.query<{ next_seq: number }>(
-        `
-          select coalesce(max(seq) + 1, 0) as next_seq
-          from task_message
-          where task_id = $1
-        `,
-        [taskId]
-      );
-      const startSeq = Number(nextSeqResult.rows[0]?.next_seq ?? 0);
       const redactedMessages = messages.map((message) => ({
         ...message,
         content: redactSecrets(message.content, secretValues),
@@ -630,24 +635,7 @@ export class PgChatStore {
         output: message.output ? redactSecrets(message.output, secretValues) : null
       }));
 
-      for (const [index, message] of redactedMessages.entries()) {
-        await client.query(
-          `
-            insert into task_message (id, task_id, seq, type, tool, content, input_json, output)
-            values ($1, $2, $3, $4, $5, $6, $7, $8)
-          `,
-          [
-            nanoid(),
-            taskId,
-            startSeq + index,
-            message.type,
-            message.tool,
-            message.content,
-            message.inputJson,
-            message.output
-          ]
-        );
-      }
+      await insertTaskMessages(client, taskId, redactedMessages);
       await this.touchChatSession(task.chat_session_id);
       await client.query("commit");
     } catch (error) {

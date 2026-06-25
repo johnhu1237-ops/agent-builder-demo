@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { defaultAgentSpec } from "@agent-builder/shared";
+import { DEFAULT_RUN_TIMEOUT_MS } from "../e2b-runner";
 import { runFakeAgentTask } from "../fake-runner";
 import { redactRunnerOutput } from "../redaction";
 
 describe("runner adapters", () => {
+  it("defaults E2B command timeout to 90 seconds", () => {
+    expect(DEFAULT_RUN_TIMEOUT_MS).toBe(90000);
+  });
+
   it("fake runner returns deterministic session metadata and task messages", async () => {
     const result = await runFakeAgentTask({
       chatSessionId: "chat-session-1",
@@ -83,14 +88,19 @@ describe("e2b command", () => {
   it("builds first-turn E2B Codex command without leaking secrets in args", () => {
     const command = buildCodexCommand({
       modelName: "gpt-5",
+      apiEndpoint: "https://api.deepseek.com",
       workspacePath: "/home/user/workspace",
       finalPath: "/home/user/workspace/final.md",
       promptPath: "/home/user/workspace/prompt.md",
       sessionId: null
     });
 
-    expect(command).toContain("codex --search --ask-for-approval never exec --json");
+    expect(command).toContain("codex exec --full-auto --skip-git-repo-check --json");
     expect(command).toContain("--model 'gpt-5'");
+    expect(command).toContain("-c 'model_provider=agent_builder_openai_compatible'");
+    expect(command).toContain("-c 'model_providers.agent_builder_openai_compatible.base_url=https://api.deepseek.com'");
+    expect(command).toContain("-c 'model_providers.agent_builder_openai_compatible.wire_api=responses'");
+    expect(command).toContain("-c 'model_providers.agent_builder_openai_compatible.requires_openai_auth=true'");
     expect(command).toContain("--output-last-message '/home/user/workspace/final.md'");
     expect(command).toContain("-C '/home/user/workspace'");
     expect(command).toContain("$(cat '/home/user/workspace/prompt.md')");
@@ -100,13 +110,14 @@ describe("e2b command", () => {
   it("builds resumed E2B Codex command", () => {
     const command = buildCodexCommand({
       modelName: "gpt-5",
+      apiEndpoint: "https://api.openai.com/v1",
       workspacePath: "/home/user/workspace",
       finalPath: "/home/user/workspace/final.md",
       promptPath: "/home/user/workspace/prompt.md",
       sessionId: "codex-session-1"
     });
 
-    expect(command).toContain("exec resume 'codex-session-1' --json");
+    expect(command).toContain("exec resume 'codex-session-1' --full-auto --skip-git-repo-check --json");
   });
 });
 
@@ -153,10 +164,10 @@ function fakeSandbox(id: string): E2BSandboxLike {
 
 describe("e2b sandbox", () => {
   it("creates a new E2B sandbox when workDir is missing", async () => {
-    const created: string[] = [];
+    const created: Array<{ templateId: string; envs?: Record<string, string> }> = [];
     const factory = {
-      create: async (templateId: string) => {
-        created.push(templateId);
+      create: async (templateId: string, runtime?: { envs?: Record<string, string> }) => {
+        created.push({ templateId, envs: runtime?.envs });
         return fakeSandbox("sandbox-new");
       },
       connect: async () => {
@@ -164,11 +175,11 @@ describe("e2b sandbox", () => {
       }
     };
 
-    const result = await resolveSandbox({ workDir: null, templateId: "template-1", factory });
+    const result = await resolveSandbox({ workDir: null, templateId: "template-1", factory, envs: { CODEX_API_KEY: "sk-test" } });
 
     expect(result.kind).toBe("created");
     expect(result.sandbox.sandboxId).toBe("sandbox-new");
-    expect(created).toEqual(["template-1"]);
+    expect(created).toEqual([{ templateId: "template-1", envs: { CODEX_API_KEY: "sk-test" } }]);
   });
 
   it("resumes an existing E2B sandbox when workDir is present", async () => {
@@ -183,7 +194,12 @@ describe("e2b sandbox", () => {
       }
     };
 
-    const result = await resolveSandbox({ workDir: "sandbox-existing", templateId: "template-1", factory });
+    const result = await resolveSandbox({
+      workDir: "sandbox-existing",
+      templateId: "template-1",
+      factory,
+      envs: { CODEX_API_KEY: "sk-test" }
+    });
 
     expect(result.kind).toBe("resumed");
     expect(result.sandbox.sandboxId).toBe("sandbox-existing");
@@ -230,6 +246,7 @@ describe("e2b runner", () => {
     const emitted: string[] = [];
     const sandbox = fakeSandbox("sandbox-1");
     const runCalls: Array<{ command: string; opts: any }> = [];
+    const createCalls: Array<{ templateId: string; envs?: Record<string, string> }> = [];
     sandbox.commands.run = async (command, opts) => {
       runCalls.push({ command, opts });
       await opts?.onStdout?.(JSON.stringify({ session_id: "codex-session-1" }) + "\n");
@@ -258,7 +275,10 @@ describe("e2b runner", () => {
         timeoutMs: 120000,
         templateId: "template-1",
         factory: {
-          create: async () => sandbox,
+          create: async (templateId, runtime) => {
+            createCalls.push({ templateId, envs: runtime?.envs });
+            return sandbox;
+          },
           connect: async () => {
             throw new Error("connect should not run");
           }
@@ -273,10 +293,11 @@ describe("e2b runner", () => {
     expect(result.finalMarkdown).toBe("# Final answer");
     expect(result.sessionId).toBe("codex-session-1");
     expect(result.workDir).toBe("sandbox-1");
+    expect(createCalls).toEqual([{ templateId: "template-1", envs: { CODEX_API_KEY: "sk-test" } }]);
     expect(runCalls[0].opts.envs).toEqual({
-      OPENAI_API_KEY: "sk-test",
-      OPENAI_BASE_URL: defaultAgentSpec.model.apiEndpoint
+      CODEX_API_KEY: "sk-test"
     });
+    expect(runCalls[0].opts.envs).not.toHaveProperty("OPENAI_API_KEY");
     expect(runCalls[0].opts.envs).not.toHaveProperty("E2B_API_KEY");
     expect(emitted).toContain("Codex session established");
     expect(emitted).toContain("paused");

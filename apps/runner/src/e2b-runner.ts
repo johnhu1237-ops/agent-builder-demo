@@ -16,6 +16,7 @@ export type RunE2BAgentTaskOptions = {
 const WORKSPACE_PATH = "/home/user/workspace";
 const PROMPT_PATH = `${WORKSPACE_PATH}/prompt.md`;
 const FINAL_PATH = `${WORKSPACE_PATH}/final.md`;
+export const DEFAULT_RUN_TIMEOUT_MS = 90000;
 
 function splitLines(chunk: string): string[] {
   return chunk.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -35,8 +36,9 @@ export async function runE2BAgentTask(
     throw new Error("E2B_API_KEY is required for RUNNER_MODE=e2b");
   }
 
-  const resolved = await resolveSandbox({ workDir: request.workDir, templateId, factory });
   const secretValues = [request.runtimeSecrets.apiKey].filter(Boolean);
+  const codexEnv = { CODEX_API_KEY: request.runtimeSecrets.apiKey };
+  const resolved = await resolveSandbox({ workDir: request.workDir, templateId, factory, envs: codexEnv });
   const localEvents: RunnerTaskMessage[] = [];
   const emitEvent = options?.emitEvent ?? createRunnerEventEmitter({
     taskId: request.taskId,
@@ -73,6 +75,7 @@ export async function runE2BAgentTask(
 
   const command = buildCodexCommand({
     modelName: request.agentSpec.model.name,
+    apiEndpoint: request.agentSpec.model.apiEndpoint,
     workspacePath: WORKSPACE_PATH,
     finalPath: FINAL_PATH,
     promptPath: PROMPT_PATH,
@@ -84,11 +87,8 @@ export async function runE2BAgentTask(
   await recordEvent(createStatusTaskMessage(effectiveSessionId ? "Resuming Codex session in E2B" : "Starting Codex session in E2B"));
   const result = await resolved.sandbox.commands.run(command, {
     cwd: WORKSPACE_PATH,
-    timeoutMs: options?.timeoutMs ?? 120000,
-    envs: {
-      OPENAI_API_KEY: request.runtimeSecrets.apiKey,
-      OPENAI_BASE_URL: request.agentSpec.model.apiEndpoint
-    },
+    timeoutMs: options?.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
+    envs: codexEnv,
     onStdout: async (data) => {
       rawChunks.push(data);
       for (const line of splitLines(data)) {

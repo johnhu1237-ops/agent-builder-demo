@@ -8,8 +8,8 @@ export type ResolvedSandbox =
 
 export function createE2BSandboxFactory(input: { apiKey: string }): E2BSandboxFactory {
   return {
-    async create(templateId) {
-      return Sandbox.create(templateId, { apiKey: input.apiKey }) as unknown as Promise<E2BSandboxLike>;
+    async create(templateId, runtime) {
+      return Sandbox.create(templateId, { apiKey: input.apiKey, envs: runtime?.envs }) as unknown as Promise<E2BSandboxLike>;
     },
     async connect(sandboxId) {
       return Sandbox.connect(sandboxId, { apiKey: input.apiKey }) as unknown as Promise<E2BSandboxLike>;
@@ -21,18 +21,20 @@ export async function resolveSandbox(input: {
   workDir: string | null;
   templateId: string;
   factory: E2BSandboxFactory;
+  envs?: Record<string, string>;
 }): Promise<ResolvedSandbox> {
+  const runtime = { envs: input.envs };
   if (!input.workDir) {
-    return { kind: "created", sandbox: await input.factory.create(input.templateId), resumeError: null };
+    return { kind: "created", sandbox: await input.factory.create(input.templateId, runtime), resumeError: null };
   }
 
   try {
-    return { kind: "resumed", sandbox: await input.factory.connect(input.workDir), resumeError: null };
+    return { kind: "resumed", sandbox: await input.factory.connect(input.workDir, runtime), resumeError: null };
   } catch (error) {
     const resumeError = error instanceof Error ? error : new Error("Sandbox resume failed");
     return {
       kind: "workspace_lost",
-      sandbox: await input.factory.create(input.templateId),
+      sandbox: await input.factory.create(input.templateId, runtime),
       resumeError
     };
   }

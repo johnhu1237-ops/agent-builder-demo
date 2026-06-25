@@ -1,7 +1,7 @@
 import cors from "cors";
 import express from "express";
 import { validateAgentSpec, type CreateAgentTaskRequest } from "@agent-builder/shared";
-import { runE2BAgentTask } from "./e2b-runner";
+import { DEFAULT_RUN_TIMEOUT_MS, runE2BAgentTask } from "./e2b-runner";
 import { runFakeAgentTask } from "./fake-runner";
 import { redactRunnerOutput } from "./redaction";
 
@@ -11,7 +11,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const port = Number(process.env.RUNNER_PORT ?? 4101);
 const runnerMode = process.env.RUNNER_MODE ?? "fake";
-const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 120000);
+const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? DEFAULT_RUN_TIMEOUT_MS);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, runnerMode });

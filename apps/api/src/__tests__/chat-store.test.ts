@@ -1005,6 +1005,44 @@ describe("PgChatStore", () => {
     expect(JSON.stringify(detail?.taskMessages)).not.toContain("sk-test");
   });
 
+  it("appends terminal task messages after incremental runner messages", async () => {
+    const session = await store.createChatSession({
+      agentSpec: defaultAgentSpec,
+      title: "Terminal append"
+    });
+    const trigger = await store.createChatMessage({
+      chatSessionId: session.id,
+      role: "user",
+      contentMarkdown: "Run task.",
+      taskId: null
+    });
+    const task = await store.createAgentTask({
+      chatSessionId: session.id,
+      triggerMessageId: trigger.id,
+      agentSpec: defaultAgentSpec
+    });
+    await store.markAgentTaskRunning(task.id);
+
+    await store.appendRunnerTaskMessages(task.id, [
+      { type: "status", tool: null, content: "streamed first", inputJson: null, output: null }
+    ]);
+    await store.failAgentTask(task.id, {
+      status: "timed_out",
+      error: "Runner timed out",
+      rawOutputRedacted: "",
+      sessionId: null,
+      workDir: null,
+      taskMessages: [{ type: "error", tool: null, content: "terminal timeout", inputJson: null, output: null }]
+    });
+
+    const detail = await store.getChatSessionDetail(session.id);
+
+    expect(detail?.taskMessages.map((message) => [message.seq, message.content])).toEqual([
+      [0, "streamed first"],
+      [1, "terminal timeout"]
+    ]);
+  });
+
   it("rejects incremental runner messages for terminal tasks", async () => {
     const session = await store.createChatSession({
       agentSpec: defaultAgentSpec,
