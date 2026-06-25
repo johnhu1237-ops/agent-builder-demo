@@ -1,7 +1,7 @@
 import { newDb } from "pg-mem";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultAgentSpec, type RunnerAgentTaskResponse } from "@agent-builder/shared";
+import { defaultAgentSpec, type Agent, type RunnerAgentTaskResponse } from "@agent-builder/shared";
 import { runChatMigrations } from "../chat-migrations";
 import { PgChatStore } from "../chat-store";
 import { createApiApp } from "../index";
@@ -34,13 +34,16 @@ describe("API orchestrator", () => {
   it("creates and lists chat sessions", async () => {
     const app = createApiApp({ chatStore: store });
 
+    const agent = await store.createAgent({ spec: defaultAgentSpec });
+
     const createResponse = await request(app)
       .post("/api/chat-sessions")
-      .send({ agentSpec: defaultAgentSpec, title: "Acme research" })
+      .send({ agentId: agent.id, title: "Acme research" })
       .expect(201);
 
     expect(createResponse.body.title).toBe("Acme research");
-    expect(createResponse.body.agentSpecSnapshot.identity.name).toBe(defaultAgentSpec.identity.name);
+    expect(createResponse.body.agentId).toBe(agent.id);
+    expect(createResponse.body.agentName).toBe(defaultAgentSpec.identity.name);
     expect(JSON.stringify(createResponse.body)).not.toContain("apiKey");
 
     const listResponse = await request(app).get("/api/chat-sessions").expect(200);
@@ -78,15 +81,16 @@ describe("API orchestrator", () => {
     });
     const app = createApiApp({ chatStore: store, runAgentTask });
 
+    const agent = await store.createAgent({ spec: defaultAgentSpec });
+
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
-      .send({ agentSpec: defaultAgentSpec, title: "First turn" })
+      .send({ agentId: agent.id, title: "First turn" })
       .expect(201);
 
     const messageResponse = await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        agentSpec: defaultAgentSpec,
         message: "Use sk-test to inspect Acme.",
         runtimeSecrets: { apiKey: "sk-test" }
       })
@@ -97,12 +101,14 @@ describe("API orchestrator", () => {
       expect.objectContaining({
         chatSessionId: sessionResponse.body.id,
         message: "Use sk-test to inspect Acme.",
-        agentSpec: defaultAgentSpec,
         runtimeSecrets: { apiKey: "sk-test" },
         sessionId: null,
         workDir: null
       })
     );
+    const callArgs = runAgentTask.mock.calls[0]![0];
+    expect(callArgs.agentSpec.identity.name).toBe(defaultAgentSpec.identity.name);
+    expect(callArgs.agentSpec.model.apiKey).toBe("sk-test");
 
     expect(messageResponse.body.messages).toHaveLength(2);
     expect(messageResponse.body.messages[0].role).toBe("user");
@@ -149,15 +155,16 @@ describe("API orchestrator", () => {
       } satisfies RunnerAgentTaskResponse);
     const app = createApiApp({ chatStore: store, runAgentTask });
 
+    const agent = await store.createAgent({ spec: defaultAgentSpec });
+
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
-      .send({ agentSpec: defaultAgentSpec, title: "Follow-up session" })
+      .send({ agentId: agent.id, title: "Follow-up session" })
       .expect(201);
 
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        agentSpec: defaultAgentSpec,
         message: "First turn",
         runtimeSecrets: { apiKey: "sk-test" }
       })
@@ -166,7 +173,6 @@ describe("API orchestrator", () => {
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        agentSpec: defaultAgentSpec,
         message: "Second turn",
         runtimeSecrets: { apiKey: "sk-test" }
       })
@@ -185,15 +191,15 @@ describe("API orchestrator", () => {
 
   it("rejects message creation without a runtime API key", async () => {
     const app = createApiApp({ chatStore: store });
+    const agent = await store.createAgent({ spec: defaultAgentSpec });
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
-      .send({ agentSpec: defaultAgentSpec, title: "No key session" })
+      .send({ agentId: agent.id, title: "No key session" })
       .expect(201);
 
     const response = await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        agentSpec: defaultAgentSpec,
         message: "Tell me about Acme.",
         runtimeSecrets: { apiKey: "" }
       })
@@ -215,15 +221,16 @@ describe("API orchestrator", () => {
     } satisfies RunnerAgentTaskResponse);
     const app = createApiApp({ chatStore: store, runAgentTask });
 
+    const agent = await store.createAgent({ spec: defaultAgentSpec });
+
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
-      .send({ agentSpec: defaultAgentSpec, title: "Runner event target" })
+      .send({ agentId: agent.id, title: "Runner event target" })
       .expect(201);
 
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        agentSpec: defaultAgentSpec,
         message: "Run with events.",
         runtimeSecrets: { apiKey: "sk-test" }
       })
@@ -243,8 +250,9 @@ describe("API orchestrator", () => {
   it("authenticates and persists internal runner task events", async () => {
     process.env.RUNNER_EVENT_TOKEN = "runner-token";
     const app = createApiApp({ chatStore: store });
+    const agent = await store.createAgent({ spec: defaultAgentSpec });
     const session = await store.createChatSession({
-      agentSpec: defaultAgentSpec,
+      agentId: agent.id,
       title: "Internal event ingest"
     });
     const trigger = await store.createChatMessage({
@@ -282,5 +290,208 @@ describe("API orchestrator", () => {
     const detail = await store.getChatSessionDetail(session.id);
     expect(detail?.taskMessages).toHaveLength(1);
     expect(detail?.taskMessages[0].content).toBe("streamed [REDACTED]");
+  });
+
+  describe("agent CRUD endpoints", () => {
+    it("creates an agent via POST /api/agents", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      const res = await request(app)
+        .post("/api/agents")
+        .send({ spec: defaultAgentSpec })
+        .expect(201);
+
+      const agent = res.body as Agent;
+      expect(agent.id).toBeTruthy();
+      expect(agent.name).toBe(defaultAgentSpec.identity.name);
+      // apiKey and apiKeyRef must not leak in HTTP responses
+      const model = agent.spec.model as Record<string, unknown>;
+      expect(model.apiKey).toBeUndefined();
+      expect(model.apiKeyRef).toBeUndefined();
+    });
+
+    it("creates an agent with default spec when no body provided", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      const res = await request(app)
+        .post("/api/agents")
+        .send({})
+        .expect(201);
+
+      expect(res.body.name).toBe(defaultAgentSpec.identity.name);
+    });
+
+    it("lists agents via GET /api/agents", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      await request(app).post("/api/agents").send({ spec: defaultAgentSpec });
+      await request(app).post("/api/agents").send({
+        spec: { ...defaultAgentSpec, identity: { name: "Agent 2", description: "Second" } }
+      });
+
+      const res = await request(app).get("/api/agents").expect(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("gets an agent by id via GET /api/agents/:id", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      const created = await request(app)
+        .post("/api/agents")
+        .send({ spec: defaultAgentSpec });
+
+      const res = await request(app)
+        .get(`/api/agents/${created.body.id}`)
+        .expect(200);
+
+      expect(res.body.name).toBe(defaultAgentSpec.identity.name);
+    });
+
+    it("returns 400 for invalid agent spec on create", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      await request(app)
+        .post("/api/agents")
+        .send({ spec: { invalid: true } })
+        .expect(400);
+    });
+
+    it("updates an agent via PUT /api/agents/:id", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      const created = await request(app)
+        .post("/api/agents")
+        .send({ spec: defaultAgentSpec });
+
+      const res = await request(app)
+        .put(`/api/agents/${created.body.id}`)
+        .send({
+          spec: {
+            ...defaultAgentSpec,
+            identity: { name: "Updated", description: "Updated description" }
+          }
+        })
+        .expect(200);
+
+      expect(res.body.name).toBe("Updated");
+      expect(res.body.description).toBe("Updated description");
+    });
+
+    it("returns 404 for nonexistent agent update", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      await request(app)
+        .put("/api/agents/nonexistent")
+        .send({ spec: defaultAgentSpec })
+        .expect(404);
+    });
+  });
+
+  describe("agent-bound session creation via API", () => {
+    it("creates a chat session bound to an agent id", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      const agent = await request(app)
+        .post("/api/agents")
+        .send({ spec: defaultAgentSpec });
+
+      const res = await request(app)
+        .post("/api/chat-sessions")
+        .send({ agentId: agent.body.id, title: "API test chat" })
+        .expect(201);
+
+      expect(res.body.agentId).toBe(agent.body.id);
+      expect(res.body.agentName).toBe(defaultAgentSpec.identity.name);
+    });
+
+    it("returns 404 when creating a session without agentId", async () => {
+      const app = createApiApp({ chatStore: store });
+
+      await request(app)
+        .post("/api/chat-sessions")
+        .send({ title: "No agent" })
+        .expect(404); // Agent not found
+    });
+  });
+
+  describe("live-spec message sending", () => {
+    it("sends a message without agentSpec in the request body", async () => {
+      const runAgentTask = vi.fn<
+        (request: {
+          chatSessionId: string;
+          message: string;
+          agentSpec: typeof defaultAgentSpec;
+          runtimeSecrets: { apiKey: string };
+          sessionId: string | null;
+          workDir: string | null;
+        }) => Promise<RunnerAgentTaskResponse>
+      >().mockResolvedValue({
+        status: "completed",
+        finalMarkdown: "# Done",
+        rawOutputRedacted: "raw",
+        sessionId: null,
+        workDir: null,
+        taskMessages: []
+      });
+      const app = createApiApp({ chatStore: store, runAgentTask });
+
+      const agent = await request(app)
+        .post("/api/agents")
+        .send({ spec: defaultAgentSpec });
+
+      const session = await request(app)
+        .post("/api/chat-sessions")
+        .send({ agentId: agent.body.id, title: "Live spec test" });
+
+      const res = await request(app)
+        .post(`/api/chat-sessions/${session.body.id}/messages`)
+        .send({ message: "Hello", runtimeSecrets: { apiKey: "sk-test" } })
+        .expect(201);
+
+      expect(res.body).toBeTruthy();
+    });
+
+    it("uses the latest agent spec from the DB, not a stale one", async () => {
+      const runAgentTask = vi.fn().mockResolvedValue({
+        status: "completed",
+        finalMarkdown: "Done",
+        rawOutputRedacted: "",
+        sessionId: null,
+        workDir: null,
+        taskMessages: []
+      } satisfies RunnerAgentTaskResponse);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+
+      const agent = await request(app)
+        .post("/api/agents")
+        .send({ spec: defaultAgentSpec });
+
+      const session = await request(app)
+        .post("/api/chat-sessions")
+        .send({ agentId: agent.body.id, title: "Spec drift test" });
+
+      // Update the agent spec AFTER creating the session
+      await request(app)
+        .put(`/api/agents/${agent.body.id}`)
+        .send({
+          spec: {
+            ...defaultAgentSpec,
+            identity: { name: "Renamed Agent", description: "Renamed" },
+            systemPrompt: "Updated system prompt"
+          }
+        })
+        .expect(200);
+
+      await request(app)
+        .post(`/api/chat-sessions/${session.body.id}/messages`)
+        .send({ message: "Hi", runtimeSecrets: { apiKey: "sk-test" } })
+        .expect(201);
+
+      const calledAgentSpec = runAgentTask.mock.calls[0]![0].agentSpec;
+      expect(calledAgentSpec.identity.name).toBe("Renamed Agent");
+      expect(calledAgentSpec.systemPrompt).toBe("Updated system prompt");
+      expect(calledAgentSpec.model.apiKey).toBe("sk-test");
+    });
   });
 });

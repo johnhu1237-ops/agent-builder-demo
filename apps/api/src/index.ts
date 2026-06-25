@@ -2,12 +2,13 @@ import cors from "cors";
 import express from "express";
 import { Pool } from "pg";
 import {
-  defaultAgentSpec,
   exportAgentSpec,
   validateAgentSpec,
   type AgentSpec,
   type AgentTaskStatus,
-  type RunnerTaskEventRequest
+  type CreateAgentRequest,
+  type RunnerTaskEventRequest,
+  type UpdateAgentRequest
 } from "@agent-builder/shared";
 import { getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
 import { runChatMigrations } from "./chat-migrations";
@@ -18,8 +19,6 @@ import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
 };
-
-let currentAgentSpec: AgentSpec = defaultAgentSpec;
 
 function publicAgentSpec(spec: AgentSpec): AgentSpec {
   const exported = exportAgentSpec(spec);
@@ -56,8 +55,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
 
   app.get("/api/agent/default", async (_req, res) => {
     const persisted = await chatStore.getDefaultAgentSpec();
-    if (persisted) currentAgentSpec = persisted;
-    res.json(publicAgentSpec(currentAgentSpec));
+    res.json(publicAgentSpec(persisted));
   });
 
   app.put("/api/agent/default", async (req, res) => {
@@ -66,21 +64,75 @@ export function createApiApp(deps: ApiDependencies = {}) {
       res.status(400).json(stableError(validation.error.message));
       return;
     }
-    currentAgentSpec = await chatStore.saveDefaultAgentSpec(validation.data);
-    res.json(publicAgentSpec(currentAgentSpec));
+    const saved = await chatStore.saveDefaultAgentSpec(validation.data);
+    res.json(publicAgentSpec(saved));
   });
 
-  app.post("/api/chat-sessions", async (req, res) => {
-    const validation = validateAgentSpec(req.body.agentSpec ?? currentAgentSpec);
+  // Agent CRUD
+
+  app.post("/api/agents", async (req, res) => {
+    const rawSpec = req.body.spec;
+    let input: CreateAgentRequest;
+    if (rawSpec === undefined) {
+      input = {};
+    } else {
+      const validation = validateAgentSpec(rawSpec);
+      if (!validation.success) {
+        res.status(400).json(stableError(validation.error.message));
+        return;
+      }
+      input = { spec: validation.data };
+    }
+    const agent = await chatStore.createAgent(input);
+    res.status(201).json({ ...agent, spec: publicAgentSpec(agent.spec) });
+  });
+
+  app.get("/api/agents", async (_req, res) => {
+    const agents = await chatStore.listAgents();
+    res.json(agents.map((a) => ({ ...a, spec: publicAgentSpec(a.spec) })));
+  });
+
+  app.get("/api/agents/:id", async (req, res) => {
+    const agent = await chatStore.getAgent(req.params.id);
+    if (!agent) {
+      res.status(404).json(stableError("Agent not found"));
+      return;
+    }
+    res.json({ ...agent, spec: publicAgentSpec(agent.spec) });
+  });
+
+  app.put("/api/agents/:id", async (req, res) => {
+    const validation = validateAgentSpec(req.body.spec);
     if (!validation.success) {
       res.status(400).json(stableError(validation.error.message));
       return;
     }
-    const session = await chatStore.createChatSession({
-      agentSpec: validation.data,
-      title: String(req.body.title ?? validation.data.identity.name)
-    });
-    res.status(201).json({ ...session, agentSpecSnapshot: publicAgentSpec(session.agentSpecSnapshot) });
+    const input: UpdateAgentRequest = { spec: validation.data };
+    try {
+      const agent = await chatStore.updateAgent(req.params.id, input);
+      res.json({ ...agent, spec: publicAgentSpec(agent.spec) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Update failed";
+      res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
+    }
+  });
+
+  app.post("/api/chat-sessions", async (req, res) => {
+    const agentId = String(req.body.agentId ?? "").trim();
+    if (!agentId) {
+      res.status(404).json(stableError("Agent not found"));
+      return;
+    }
+    try {
+      const session = await chatStore.createChatSession({
+        agentId,
+        title: req.body.title
+      });
+      res.status(201).json(session);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Creation failed";
+      res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
+    }
   });
 
   app.get("/api/chat-sessions", async (_req, res) => {
@@ -103,14 +155,28 @@ export function createApiApp(deps: ApiDependencies = {}) {
       return;
     }
 
-    const validation = validateAgentSpec(req.body.agentSpec);
+    const agent = await chatStore.getAgent(detail.agentId);
+    if (!agent) {
+      res.status(500).json(stableError("Agent not found for this session"));
+      return;
+    }
+
+    const apiKey = String(req.body.runtimeSecrets?.apiKey ?? "").trim();
+    const agentSpec: AgentSpec = {
+      ...agent.spec,
+      model: {
+        ...agent.spec.model,
+        apiKey
+      }
+    };
+
+    const validation = validateAgentSpec(agentSpec);
     if (!validation.success) {
       res.status(400).json(stableError(validation.error.message));
       return;
     }
 
     const message = String(req.body.message ?? "").trim();
-    const apiKey = String(req.body.runtimeSecrets?.apiKey ?? "").trim();
     if (!message) {
       res.status(400).json(stableError("Message is required"));
       return;
