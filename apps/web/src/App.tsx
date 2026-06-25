@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   abilityRegistry,
@@ -8,8 +8,9 @@ import {
   type ChatSession,
   type ChatSessionDetail
 } from "@agent-builder/shared";
-import { createChatSession, getDefaultAgent, listChatSessions, saveDefaultAgent, sendChatMessage } from "./api";
+import { createChatSession, getChatSession, getDefaultAgent, listChatSessions, saveDefaultAgent, sendChatMessage } from "./api";
 import { createExportPayload, defaultUiAgentSpec } from "./defaults";
+import { formatRelativeTime } from "./relative-time";
 
 type SendState = "idle" | "sending" | "failed";
 type SaveState = "idle" | "saving" | "saved" | "failed";
@@ -38,6 +39,9 @@ export default function App() {
   const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>("apps");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSessionDetail | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
+  const latestSelectionRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const enabledAppCount = useMemo(
@@ -129,6 +133,8 @@ export default function App() {
         message
       });
       setActiveSession(detail);
+      setActiveSessionId(detail.id);
+      latestSelectionRef.current = detail.id;
       setSessions((current) => {
         const withoutCurrent = current.filter((item) => item.id !== detail.id);
         return [detail, ...withoutCurrent];
@@ -138,6 +144,35 @@ export default function App() {
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Message failed");
       setSendState("failed");
+    }
+  }
+
+  function startNewChat() {
+    latestSelectionRef.current = null;
+    setActiveSession(null);
+    setActiveSessionId(null);
+    setMessage("");
+    setError(null);
+  }
+
+  async function selectSession(id: string) {
+    setError(null);
+    setActiveSessionId(id);
+    setLoadingSessionId(id);
+    latestSelectionRef.current = id;
+    try {
+      const detail = await getChatSession(id);
+      if (latestSelectionRef.current === id) {
+        setActiveSession(detail);
+      }
+    } catch (selectError) {
+      if (latestSelectionRef.current === id) {
+        setError(selectError instanceof Error ? selectError.message : "Failed to load session");
+      }
+    } finally {
+      if (latestSelectionRef.current === id) {
+        setLoadingSessionId(null);
+      }
     }
   }
 
@@ -154,7 +189,31 @@ export default function App() {
           <p className="eyebrow">Agent Builder</p>
           <h1>Research Agent</h1>
         </div>
-        <div className="agent-pill">{sessions.length} chat sessions</div>
+        <div className="session-list" aria-label="Chat sessions">
+          <button className="button ghost compact new-chat" type="button" onClick={startNewChat}>
+            + New chat
+          </button>
+          <ul className="session-items">
+            {sessions.map((session) => (
+              <li key={session.id}>
+                <button
+                  type="button"
+                  className={`session-item${session.id === activeSessionId ? " active" : ""}`}
+                  aria-current={session.id === activeSessionId ? "true" : undefined}
+                  onClick={() => selectSession(session.id)}
+                >
+                  <span className="session-title">{session.title}</span>
+                  <span className="session-meta">
+                    {formatRelativeTime(session.updatedAt)}
+                    {session.status === "archived" ? " · archived" : ""}
+                    {loadingSessionId === session.id ? " · loading…" : ""}
+                  </span>
+                </button>
+              </li>
+            ))}
+            {sessions.length === 0 ? <li className="hint session-empty">No sessions yet.</li> : null}
+          </ul>
+        </div>
       </aside>
 
       <section className="workspace">

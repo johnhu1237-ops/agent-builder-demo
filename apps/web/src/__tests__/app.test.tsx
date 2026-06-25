@@ -195,7 +195,124 @@ describe("App chat workbench", () => {
 
     expect(screen.getByText("API key is required")).toBeInTheDocument();
   });
+
+  it("lists prior chat sessions in the sidebar with relative time", async () => {
+    const old = new Date(Date.now() - 5 * 60_000).toISOString();
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/api/agent/default")) return jsonResponse(persistedAgentSpec);
+      if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
+        return jsonResponse([
+          { id: "chat-session-1", agentSpecSnapshot: defaultAgentSpec, title: "First session", sessionId: null, workDir: null, status: "active", createdAt: old, updatedAt: old }
+        ]);
+      }
+      return jsonResponse(defaultAgentSpec);
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("First session")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/5m ago/)).toBeInTheDocument();
+  });
+
+  it("opens a session and renders its history when clicked", async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/api/agent/default")) return jsonResponse(persistedAgentSpec);
+      if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
+        return jsonResponse([
+          { id: "chat-session-1", agentSpecSnapshot: defaultAgentSpec, title: "First session", sessionId: null, workDir: null, status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+        ]);
+      }
+      if (url.endsWith("/api/chat-sessions/chat-session-1") && (!options || options.method === undefined)) {
+        return jsonResponse(sessionDetailFixture({ title: "First session" }));
+      }
+      return jsonResponse(defaultAgentSpec);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("First session"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Earlier question.")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Earlier Report" })).toBeInTheDocument();
+    });
+  });
+
+  it("clears the active session and message input on New chat", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    expect(screen.getByLabelText("Message")).toHaveValue("Research RunwayML and produce a concise company profile.");
+
+    await user.click(screen.getByRole("button", { name: "+ New chat" }));
+
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(screen.getByText("Start the conversation with the configured Research Agent.")).toBeInTheDocument();
+  });
+
+  it("resumes the selected session when sending instead of creating a new one", async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/api/agent/default")) return jsonResponse(persistedAgentSpec);
+      if (url.endsWith("/api/chat-sessions") && options?.method !== "POST") {
+        return jsonResponse([
+          { id: "chat-session-1", agentSpecSnapshot: defaultAgentSpec, title: "First session", sessionId: "fake-session-chat-session-1", workDir: "/tmp/fake", status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+        ]);
+      }
+      if (url.endsWith("/api/chat-sessions/chat-session-1") && (!options || options.method === undefined)) {
+        return jsonResponse(sessionDetailFixture({ title: "First session" }));
+      }
+      if (url.endsWith("/api/chat-sessions/chat-session-1/messages")) {
+        return jsonResponse(sessionDetailFixture({ title: "First session" }), 201);
+      }
+      return jsonResponse(defaultAgentSpec);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("First session"));
+    await screen.findByText("Earlier question.");
+
+    await user.click(screen.getByRole("tab", { name: "Model" }));
+    await user.type(screen.getByLabelText("API key"), "sk-test");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      const sentResume = fetchMock.mock.calls.some(
+        ([u, o]) => String(u).endsWith("/api/chat-sessions/chat-session-1/messages") && o?.method === "POST"
+      );
+      expect(sentResume).toBe(true);
+    });
+    const createdNew = fetchMock.mock.calls.some(
+      ([u, o]) => String(u).endsWith("/api/chat-sessions") && o?.method === "POST"
+    );
+    expect(createdNew).toBe(false);
+  });
 });
+
+function sessionDetailFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  const ts = new Date().toISOString();
+  return {
+    id: "chat-session-1",
+    agentSpecSnapshot: defaultAgentSpec,
+    title: "Research Agent",
+    sessionId: "fake-session-chat-session-1",
+    workDir: "/tmp/fake",
+    status: "active",
+    createdAt: ts,
+    updatedAt: ts,
+    messages: [
+      { id: "m1", chatSessionId: "chat-session-1", role: "user", contentMarkdown: "Earlier question.", taskId: "t1", createdAt: ts },
+      { id: "m2", chatSessionId: "chat-session-1", role: "assistant", contentMarkdown: "# Earlier Report\n\nDone.", taskId: "t1", createdAt: ts }
+    ],
+    latestTask: null,
+    taskMessages: [],
+    ...overrides
+  };
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
