@@ -57,6 +57,10 @@ function isPgMemUnsupportedIfNotExists(error: unknown): boolean {
   return error instanceof Error && error.message.includes("Not supported");
 }
 
+function isPgMemUnknownLanguage(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("Unkonwn language");
+}
+
 function isUnsupportedAdvisoryLockError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -387,6 +391,109 @@ async function backfillCreatedOrder(db: Queryable, tableName: "chat_message" | "
   }
 }
 
+async function seedDefaultAgent(db: Queryable): Promise<void> {
+  const existing = await db.query<{ id: string }>(`select id from agents where id = 'default'`);
+  if (existing.rows.length > 0) {
+    return;
+  }
+
+  const config = await db.query<{ agent_spec: unknown }>(
+    `select agent_spec from default_agent_config where id = 'default'`
+  );
+
+  let sourceSpec: Record<string, unknown> | null = null;
+  if (config.rows[0]) {
+    sourceSpec = config.rows[0].agent_spec as Record<string, unknown>;
+  } else {
+    const fallback = await db.query<{ agent_spec_snapshot: unknown }>(
+      `
+        select agent_spec_snapshot
+        from chat_session
+        where agent_spec_snapshot is not null
+        order by created_at asc, id asc
+        limit 1
+      `
+    );
+    if (fallback.rows[0]?.agent_spec_snapshot) {
+      sourceSpec = fallback.rows[0].agent_spec_snapshot as Record<string, unknown>;
+    }
+  }
+
+  if (!sourceSpec) {
+    return;
+  }
+
+  const identity = (sourceSpec.identity ?? {}) as Record<string, string>;
+  await db.query(
+    `insert into agents (id, name, description, spec) values ($1, $2, $3, $4)`,
+    ["default", identity.name ?? "Research Agent", identity.description ?? "Default agent", JSON.stringify(sourceSpec)]
+  );
+}
+
+async function installChatSessionAgentDefaults(db: Queryable): Promise<boolean> {
+  try {
+    await db.query(`
+      create or replace function set_chat_session_agent_defaults()
+      returns trigger as $$
+      declare
+        fallback_agent_id text;
+      begin
+        if new.agent_name is null and new.agent_spec_snapshot is not null then
+          new.agent_name := new.agent_spec_snapshot -> 'identity' ->> 'name';
+        end if;
+
+        if new.agent_id is null then
+          select id into fallback_agent_id
+          from agents
+          where id = 'default'
+          limit 1;
+
+          if fallback_agent_id is null and new.agent_spec_snapshot is not null then
+            insert into agents (id, name, description, spec)
+            values (
+              'default',
+              coalesce(new.agent_spec_snapshot -> 'identity' ->> 'name', 'Research Agent'),
+              coalesce(new.agent_spec_snapshot -> 'identity' ->> 'description', 'Default agent'),
+              new.agent_spec_snapshot
+            )
+            on conflict (id) do nothing;
+            fallback_agent_id := 'default';
+          end if;
+
+          new.agent_id := fallback_agent_id;
+        end if;
+
+        if new.agent_name is null and new.agent_id is not null then
+          select name into new.agent_name
+          from agents
+          where id = new.agent_id;
+        end if;
+
+        return new;
+      end;
+      $$ language plpgsql
+    `);
+
+    await db.query(`
+      drop trigger if exists trg_chat_session_agent_defaults on chat_session
+    `);
+
+    await db.query(`
+      create trigger trg_chat_session_agent_defaults
+      before insert on chat_session
+      for each row
+      execute function set_chat_session_agent_defaults()
+    `);
+
+    return true;
+  } catch (error) {
+    if (!isPgMemUnsupportedIfNotExists(error) && !isPgMemUnknownLanguage(error)) {
+      throw error;
+    }
+    return false;
+  }
+}
+
 async function runChatMigrationsSequence(db: Queryable): Promise<void> {
   await createTableIfNeeded(
     db,
@@ -402,11 +509,29 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
 
   await createTableIfNeeded(
     db,
+    "agents",
+    `
+    create table if not exists agents (
+      id text primary key,
+      name text not null,
+      description text not null,
+      spec jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `
+  );
+
+  await createTableIfNeeded(
+    db,
     "chat_session",
     `
     create table if not exists chat_session (
       id text primary key,
-      agent_spec_snapshot jsonb not null,
+      agent_id text references agents(id),
+      agent_name text,
+      agent_spec_snapshot jsonb,
+      last_message_preview text,
       title text not null,
       session_id text,
       work_dir text,
@@ -498,6 +623,77 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
   await backfillCreatedOrder(db, "agent_tasks");
 
   await repairAgentTaskTriggerLinks(db);
+
+  await addColumnIfNeeded(
+    db,
+    "chat_session",
+    "agent_id",
+    `
+    alter table chat_session
+    add column if not exists agent_id text references agents(id)
+  `
+  );
+
+  await addColumnIfNeeded(
+    db,
+    "chat_session",
+    "agent_name",
+    `
+    alter table chat_session
+    add column if not exists agent_name text
+  `
+  );
+
+  await addColumnIfNeeded(
+    db,
+    "chat_session",
+    "last_message_preview",
+    `
+    alter table chat_session
+    add column if not exists last_message_preview text
+  `
+  );
+
+  await db.query(`
+    update chat_session
+    set agent_name = agent_spec_snapshot -> 'identity' ->> 'name'
+    where agent_name is null
+      and agent_spec_snapshot is not null
+  `);
+
+  await seedDefaultAgent(db);
+
+  await db.query(`
+    update chat_session
+    set agent_id = 'default'
+    where agent_id is null
+  `);
+
+  const agentDefaultsInstalled = await installChatSessionAgentDefaults(db);
+
+  if (agentDefaultsInstalled) {
+    try {
+      await db.query(`
+        alter table chat_session
+        alter column agent_id set not null
+      `);
+    } catch (error) {
+      if (!isPgMemUnsupportedIfNotExists(error)) {
+        throw error;
+      }
+    }
+  }
+
+  try {
+    await db.query(`
+      alter table chat_session
+      alter column agent_spec_snapshot drop not null
+    `);
+  } catch (error) {
+    if (!isPgMemUnsupportedIfNotExists(error)) {
+      throw error;
+    }
+  }
 
   await createIndexIfNeeded(
     db,

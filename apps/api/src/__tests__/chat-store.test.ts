@@ -25,6 +25,66 @@ describe("PgChatStore", () => {
     await expect(runChatMigrations(pool)).resolves.toBeUndefined();
   });
 
+  describe("v0.1.3 multi-agent migration", () => {
+    it("creates the agents table", async () => {
+      const result = await pool.query<{ table_name: string }>(`
+        select table_name
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_name = 'agents'
+      `);
+      expect(result.rows.length).toBe(1);
+    });
+
+    it("seeds a default agent from default_agent_config", async () => {
+      await pool.query(
+        `insert into default_agent_config (id, agent_spec, updated_at)
+         values ($1, $2, now())
+         on conflict (id) do update
+         set agent_spec = excluded.agent_spec,
+             updated_at = now()`,
+        ["default", JSON.stringify(defaultAgentSpec)]
+      );
+
+      await runChatMigrations(pool);
+
+      const result = await pool.query<{ id: string; name: string; description: string; spec: unknown }>(
+        `select id, name, description, spec from agents`
+      );
+      expect(result.rows.length).toBeGreaterThanOrEqual(1);
+      const defaultAgent = result.rows.find((row) => row.name === defaultAgentSpec.identity.name);
+      expect(defaultAgent).toBeDefined();
+    });
+
+    it("adds agent_id, agent_name, and last_message_preview columns to chat_session", async () => {
+      const result = await pool.query<{ column_name: string }>(`
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'chat_session'
+          and column_name in ('agent_id', 'agent_name', 'last_message_preview')
+      `);
+      expect(result.rows.length).toBe(3);
+    });
+
+    it("backfills agent_name from existing agent_spec_snapshot", async () => {
+      await pool.query(
+        `insert into chat_session (id, agent_spec_snapshot, title, status, agent_id, agent_name)
+         values ($1, $2, 'Test', 'active', null, null)`,
+        ["cs_backfill", JSON.stringify(defaultAgentSpec)]
+      );
+
+      await runChatMigrations(pool);
+
+      const result = await pool.query<{ agent_name: string; agent_id: string }>(
+        `select agent_name, agent_id from chat_session where id = $1`,
+        ["cs_backfill"]
+      );
+      expect(result.rows[0]?.agent_name).toBe(defaultAgentSpec.identity.name);
+      expect(result.rows[0]?.agent_id).toBeTruthy();
+    });
+  });
+
   it("repairs duplicate trigger tasks by keeping the richer terminal canonical task during migrations", async () => {
     const session = await store.createChatSession({
       agentSpec: defaultAgentSpec,
