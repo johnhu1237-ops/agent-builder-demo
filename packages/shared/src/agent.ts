@@ -5,14 +5,17 @@ export type Agent = {
   name: string;
   description: string;
   spec: AgentSpec;
+  hasApiKey: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
 export type CreateAgentRequest = {
   spec?: AgentSpec;
+  apiKey: string;
 };
 
 export type UpdateAgentRequest = {
   spec: AgentSpec;
+  apiKey?: string;
 };

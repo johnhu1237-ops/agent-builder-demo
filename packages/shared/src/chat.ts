@@ -69,9 +69,6 @@ export type CreateChatSessionRequest = {
 
 export type SendChatMessageRequest = {
   message: string;
-  runtimeSecrets: {
-    apiKey: string;
-  };
 };
 
 export type RunnerEventsTarget = {
