@@ -11,10 +11,13 @@ import {
   type ChatMessageRole,
   type ChatSession,
   type ChatSessionDetail,
+  type CreateAgentRequest,
   type RunnerTaskMessage,
-  type TaskMessage
+  type TaskMessage,
+  type UpdateAgentRequest
 } from "@agent-builder/shared";
 import { redactSecrets, redactUnknownJson } from "./redaction";
+import { encryptApiKey } from "./encryption";
 
 type Queryable = Pool | PoolClient;
 
@@ -74,9 +77,12 @@ type AgentRow = {
   name: string;
   description: string;
   spec: AgentSpec;
+  encrypted_api_key: string | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
+
+export type AgentWithSecret = Agent & { encryptedApiKey: string | null };
 
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
 
@@ -164,12 +170,14 @@ function mapTaskMessage(row: TaskMessageRow): TaskMessage {
   };
 }
 
-function mapAgent(row: AgentRow): Agent {
+function mapAgent(row: AgentRow): AgentWithSecret {
   return {
     id: row.id,
     name: row.name,
     description: row.description,
     spec: row.spec,
+    hasApiKey: Boolean(row.encrypted_api_key),
+    encryptedApiKey: row.encrypted_api_key ?? null,
     createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
     updatedAt: toIsoString(row.updated_at) ?? new Date(0).toISOString()
   };
@@ -374,25 +382,30 @@ export class PgChatStore {
     return snapshot;
   }
 
-  async createAgent(input: { spec?: AgentSpec }): Promise<Agent> {
+  async createAgent(input: CreateAgentRequest): Promise<AgentWithSecret> {
+    const apiKey = input.apiKey?.trim();
+    if (!apiKey) {
+      throw new Error("API key is required");
+    }
     const spec = input.spec ?? defaultAgentSpec;
     const sanitized = exportAgentSpec(spec);
     const name = spec.identity.name;
     const description = spec.identity.description;
+    const encryptedApiKey = encryptApiKey(apiKey);
 
     const result = await this.pool.query<AgentRow>(
       `
-        insert into agents (id, name, description, spec)
-        values ($1, $2, $3, $4)
+        insert into agents (id, name, description, spec, encrypted_api_key)
+        values ($1, $2, $3, $4, $5)
         returning *
       `,
-      [nanoid(), name, description, sanitized]
+      [nanoid(), name, description, sanitized, encryptedApiKey]
     );
 
     return mapAgent(result.rows[0]);
   }
 
-  async getAgent(id: string): Promise<Agent | null> {
+  async getAgent(id: string): Promise<AgentWithSecret | null> {
     const result = await this.pool.query<AgentRow>(
       `
         select *
@@ -406,7 +419,7 @@ export class PgChatStore {
     return mapAgent(result.rows[0]);
   }
 
-  async listAgents(): Promise<Agent[]> {
+  async listAgents(): Promise<AgentWithSecret[]> {
     const result = await this.pool.query<AgentRow>(
       `
         select *
@@ -418,23 +431,28 @@ export class PgChatStore {
     return result.rows.map(mapAgent);
   }
 
-  async updateAgent(id: string, input: { spec: AgentSpec }): Promise<Agent> {
+  async updateAgent(id: string, input: UpdateAgentRequest): Promise<AgentWithSecret> {
     const spec = input.spec;
     const sanitized = exportAgentSpec(spec);
     const name = spec.identity.name;
     const description = spec.identity.description;
+    const apiKey = input.apiKey?.trim();
+
+    const setClauses = ["name = $2", "description = $3", "spec = $4", "updated_at = now()"];
+    const params: unknown[] = [id, name, description, sanitized];
+    if (apiKey) {
+      params.push(encryptApiKey(apiKey));
+      setClauses.push(`encrypted_api_key = $${params.length}`);
+    }
 
     const result = await this.pool.query<AgentRow>(
       `
         update agents
-        set name = $2,
-            description = $3,
-            spec = $4,
-            updated_at = now()
+        set ${setClauses.join(", ")}
         where id = $1
         returning *
       `,
-      [id, name, description, sanitized]
+      params
     );
 
     if (!result.rows[0]) {

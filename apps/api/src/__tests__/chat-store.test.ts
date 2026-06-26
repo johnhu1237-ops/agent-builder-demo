@@ -8,6 +8,8 @@ import {
 import { runChatMigrations } from "../chat-migrations";
 import { PgChatStore } from "../chat-store";
 
+process.env.LLM_API_KEY_ENCRYPTION_KEY = "a".repeat(64);
+
 describe("PgChatStore", () => {
   let pool: import("pg").Pool;
   let store: PgChatStore;
@@ -1189,7 +1191,7 @@ describe("PgChatStore", () => {
 
   describe("agent CRUD", () => {
     it("creates an agent deriving name and description from spec", async () => {
-      const input: CreateAgentRequest = { spec: defaultAgentSpec };
+      const input: CreateAgentRequest = { spec: defaultAgentSpec, apiKey: "sk-test" };
       const agent = await store.createAgent(input);
 
       expect(agent.id).toBeTruthy();
@@ -1201,7 +1203,7 @@ describe("PgChatStore", () => {
     });
 
     it("creates an agent with a default spec when no spec is provided", async () => {
-      const input: CreateAgentRequest = {};
+      const input: CreateAgentRequest = { apiKey: "sk-test" };
       const agent = await store.createAgent(input);
 
       expect(agent.name).toBe(defaultAgentSpec.identity.name);
@@ -1209,7 +1211,7 @@ describe("PgChatStore", () => {
     });
 
     it("gets an agent by id", async () => {
-      const created = await store.createAgent({ spec: defaultAgentSpec });
+      const created = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
       const agent = await store.getAgent(created.id);
 
       expect(agent).not.toBeNull();
@@ -1227,13 +1229,15 @@ describe("PgChatStore", () => {
         spec: {
           ...defaultAgentSpec,
           identity: { ...defaultAgentSpec.identity, name: "Agent A" }
-        }
+        },
+        apiKey: "sk-test"
       });
       await store.createAgent({
         spec: {
           ...defaultAgentSpec,
           identity: { ...defaultAgentSpec.identity, name: "Agent B" }
-        }
+        },
+        apiKey: "sk-test"
       });
 
       const agents = await store.listAgents();
@@ -1244,7 +1248,7 @@ describe("PgChatStore", () => {
     });
 
     it("updates an agent spec, re-deriving name and description", async () => {
-      const created = await store.createAgent({ spec: defaultAgentSpec });
+      const created = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
       const newSpec = {
         ...defaultAgentSpec,
         identity: { name: "Updated Agent", description: "Updated description" }
@@ -1262,26 +1266,67 @@ describe("PgChatStore", () => {
       await expect(store.updateAgent("nonexistent", input)).rejects.toThrow("not found");
     });
 
-    it("does not leak apiKey in stored spec", async () => {
-      const specWithKey = {
-        ...defaultAgentSpec,
-        model: { ...defaultAgentSpec.model, apiKey: "sk-secret" }
-      };
-      const agent = await store.createAgent({ spec: specWithKey });
+    it("encrypts the api key on create and sets hasApiKey", async () => {
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-create" });
+      expect(agent.hasApiKey).toBe(true);
 
-      const stored = await pool.query<{ spec: unknown }>(
-        `select spec from agents where id = $1`,
+      const stored = await pool.query<{ encrypted_api_key: string | null }>(
+        `select encrypted_api_key from agents where id = $1`,
         [agent.id]
       );
-      const storedSpec = stored.rows[0].spec as Record<string, unknown>;
-      const storedModel = storedSpec.model as Record<string, unknown>;
-      expect(storedModel.apiKey).toBeUndefined();
+      const encrypted = stored.rows[0].encrypted_api_key;
+      expect(encrypted).toBeTruthy();
+      expect(encrypted).not.toContain("sk-create");
+      expect(encrypted!.split(":")).toHaveLength(3);
+    });
+
+    it("rejects creating an agent without an api key", async () => {
+      await expect(
+        store.createAgent({ spec: defaultAgentSpec, apiKey: "" })
+      ).rejects.toThrow("API key is required");
+    });
+
+    it("re-encrypts on update when apiKey is provided", async () => {
+      const created = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-old" });
+      const before = await pool.query<{ encrypted_api_key: string | null }>(
+        `select encrypted_api_key from agents where id = $1`,
+        [created.id]
+      );
+      const updated = await store.updateAgent(created.id, { spec: defaultAgentSpec, apiKey: "sk-new" });
+      expect(updated.hasApiKey).toBe(true);
+      const after = await pool.query<{ encrypted_api_key: string | null }>(
+        `select encrypted_api_key from agents where id = $1`,
+        [created.id]
+      );
+      expect(after.rows[0].encrypted_api_key).not.toBe(before.rows[0].encrypted_api_key);
+      expect(after.rows[0].encrypted_api_key).not.toContain("sk-new");
+    });
+
+    it("leaves the encrypted key unchanged on update when apiKey is omitted", async () => {
+      const created = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-keep" });
+      const before = await pool.query<{ encrypted_api_key: string | null }>(
+        `select encrypted_api_key from agents where id = $1`,
+        [created.id]
+      );
+      await store.updateAgent(created.id, { spec: defaultAgentSpec });
+      const after = await pool.query<{ encrypted_api_key: string | null }>(
+        `select encrypted_api_key from agents where id = $1`,
+        [created.id]
+      );
+      expect(after.rows[0].encrypted_api_key).toBe(before.rows[0].encrypted_api_key);
+    });
+
+    it("exposes hasApiKey false for agents with a null encrypted key", async () => {
+      const created = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-x" });
+      await pool.query(`update agents set encrypted_api_key = null where id = $1`, [created.id]);
+      const fetched = await store.getAgent(created.id);
+      expect(fetched?.hasApiKey).toBe(false);
     });
   });
 
   describe("agent-bound session creation", () => {
     it("creates a chat session bound to an agent id with null spec snapshot", async () => {
-      const agent = await store.createAgent({ spec: defaultAgentSpec });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
       const session = await store.createChatSession({ agentId: agent.id, title: "Test chat" });
 
       expect(session.agentId).toBe(agent.id);
@@ -1292,7 +1337,7 @@ describe("PgChatStore", () => {
     });
 
     it("defaults the title to the agent name when not provided", async () => {
-      const agent = await store.createAgent({ spec: defaultAgentSpec });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
       const session = await store.createChatSession({ agentId: agent.id });
 
       expect(session.title).toBe(agent.name);
@@ -1303,7 +1348,7 @@ describe("PgChatStore", () => {
     });
 
     it("lists sessions with agentId, agentName, and lastMessagePreview", async () => {
-      const agent = await store.createAgent({ spec: defaultAgentSpec });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
       await store.createChatSession({ agentId: agent.id, title: "List test" });
 
       const sessions = await store.listChatSessions();

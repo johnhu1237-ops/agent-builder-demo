@@ -72,16 +72,21 @@ export function createApiApp(deps: ApiDependencies = {}) {
 
   app.post("/api/agents", async (req, res) => {
     const rawSpec = req.body.spec;
+    const apiKey = req.body.apiKey;
+    if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
+      res.status(400).json(stableError("apiKey is required"));
+      return;
+    }
     let input: CreateAgentRequest;
     if (rawSpec === undefined) {
-      input = {};
+      input = { apiKey };
     } else {
       const validation = validateAgentSpec(rawSpec);
       if (!validation.success) {
         res.status(400).json(stableError(validation.error.message));
         return;
       }
-      input = { spec: validation.data };
+      input = { spec: validation.data, apiKey };
     }
     const agent = await chatStore.createAgent(input);
     res.status(201).json({ ...agent, spec: publicAgentSpec(agent.spec) });
@@ -108,6 +113,9 @@ export function createApiApp(deps: ApiDependencies = {}) {
       return;
     }
     const input: UpdateAgentRequest = { spec: validation.data };
+    if (req.body.apiKey && typeof req.body.apiKey === "string") {
+      input.apiKey = req.body.apiKey;
+    }
     try {
       const agent = await chatStore.updateAgent(req.params.id, input);
       res.json({ ...agent, spec: publicAgentSpec(agent.spec) });

@@ -11,6 +11,7 @@ describe("API orchestrator", () => {
   let store: PgChatStore;
 
   beforeEach(async () => {
+    process.env.LLM_API_KEY_ENCRYPTION_KEY = "a".repeat(64);
     const db = newDb();
     const adapter = db.adapters.createPg();
     pool = new adapter.Pool();
@@ -34,7 +35,7 @@ describe("API orchestrator", () => {
   it("creates and lists chat sessions", async () => {
     const app = createApiApp({ chatStore: store });
 
-    const agent = await store.createAgent({ spec: defaultAgentSpec });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
     const createResponse = await request(app)
       .post("/api/chat-sessions")
@@ -81,7 +82,7 @@ describe("API orchestrator", () => {
     });
     const app = createApiApp({ chatStore: store, runAgentTask });
 
-    const agent = await store.createAgent({ spec: defaultAgentSpec });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
@@ -155,7 +156,7 @@ describe("API orchestrator", () => {
       } satisfies RunnerAgentTaskResponse);
     const app = createApiApp({ chatStore: store, runAgentTask });
 
-    const agent = await store.createAgent({ spec: defaultAgentSpec });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
@@ -191,7 +192,7 @@ describe("API orchestrator", () => {
 
   it("rejects message creation without a runtime API key", async () => {
     const app = createApiApp({ chatStore: store });
-    const agent = await store.createAgent({ spec: defaultAgentSpec });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
       .send({ agentId: agent.id, title: "No key session" })
@@ -221,7 +222,7 @@ describe("API orchestrator", () => {
     } satisfies RunnerAgentTaskResponse);
     const app = createApiApp({ chatStore: store, runAgentTask });
 
-    const agent = await store.createAgent({ spec: defaultAgentSpec });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
@@ -250,7 +251,7 @@ describe("API orchestrator", () => {
   it("authenticates and persists internal runner task events", async () => {
     process.env.RUNNER_EVENT_TOKEN = "runner-token";
     const app = createApiApp({ chatStore: store });
-    const agent = await store.createAgent({ spec: defaultAgentSpec });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
     const session = await store.createChatSession({
       agentId: agent.id,
       title: "Internal event ingest"
@@ -298,7 +299,7 @@ describe("API orchestrator", () => {
 
       const res = await request(app)
         .post("/api/agents")
-        .send({ spec: defaultAgentSpec })
+        .send({ spec: defaultAgentSpec, apiKey: "sk-test" })
         .expect(201);
 
       const agent = res.body as Agent;
@@ -315,7 +316,7 @@ describe("API orchestrator", () => {
 
       const res = await request(app)
         .post("/api/agents")
-        .send({})
+        .send({ apiKey: "sk-test" })
         .expect(201);
 
       expect(res.body.name).toBe(defaultAgentSpec.identity.name);
@@ -324,9 +325,10 @@ describe("API orchestrator", () => {
     it("lists agents via GET /api/agents", async () => {
       const app = createApiApp({ chatStore: store });
 
-      await request(app).post("/api/agents").send({ spec: defaultAgentSpec });
+      await request(app).post("/api/agents").send({ spec: defaultAgentSpec, apiKey: "sk-test" });
       await request(app).post("/api/agents").send({
-        spec: { ...defaultAgentSpec, identity: { name: "Agent 2", description: "Second" } }
+        spec: { ...defaultAgentSpec, identity: { name: "Agent 2", description: "Second" } },
+        apiKey: "sk-test"
       });
 
       const res = await request(app).get("/api/agents").expect(200);
@@ -339,7 +341,7 @@ describe("API orchestrator", () => {
 
       const created = await request(app)
         .post("/api/agents")
-        .send({ spec: defaultAgentSpec });
+        .send({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
       const res = await request(app)
         .get(`/api/agents/${created.body.id}`)
@@ -353,7 +355,7 @@ describe("API orchestrator", () => {
 
       await request(app)
         .post("/api/agents")
-        .send({ spec: { invalid: true } })
+        .send({ spec: { invalid: true }, apiKey: "sk-test" })
         .expect(400);
     });
 
@@ -362,7 +364,7 @@ describe("API orchestrator", () => {
 
       const created = await request(app)
         .post("/api/agents")
-        .send({ spec: defaultAgentSpec });
+        .send({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
       const res = await request(app)
         .put(`/api/agents/${created.body.id}`)
@@ -394,7 +396,7 @@ describe("API orchestrator", () => {
 
       const agent = await request(app)
         .post("/api/agents")
-        .send({ spec: defaultAgentSpec });
+        .send({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
       const res = await request(app)
         .post("/api/chat-sessions")
@@ -438,7 +440,7 @@ describe("API orchestrator", () => {
 
       const agent = await request(app)
         .post("/api/agents")
-        .send({ spec: defaultAgentSpec });
+        .send({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
       const session = await request(app)
         .post("/api/chat-sessions")
@@ -465,7 +467,7 @@ describe("API orchestrator", () => {
 
       const agent = await request(app)
         .post("/api/agents")
-        .send({ spec: defaultAgentSpec });
+        .send({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
       const session = await request(app)
         .post("/api/chat-sessions")
