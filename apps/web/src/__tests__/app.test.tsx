@@ -220,11 +220,17 @@ describe("multi-agent UI", () => {
     });
   });
 
-  it("shows an API Key field in the agent config panel", async () => {
+  it("shows the agent API Key field only in the Model tab", async () => {
     render(<App />);
     const user = userEvent.setup();
     const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
     await user.click(agentButton);
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toBeInTheDocument());
+
+    expect(screen.queryByLabelText("Agent API Key")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Model" }));
+
     await waitFor(() => expect(screen.getByLabelText("Agent API Key")).toBeInTheDocument());
   });
 

@@ -378,16 +378,6 @@ export default function App() {
                       }
                     />
                   </label>
-                  <label>
-                    API Key
-                    <input
-                      type="password"
-                      aria-label="Agent API Key"
-                      value={editAgentApiKey}
-                      onChange={(event) => setEditAgentApiKey(event.target.value)}
-                      placeholder={activeAgent.hasApiKey ? "Configured — leave blank to keep" : "sk-…"}
-                    />
-                  </label>
                 </div>
               ) : null}
 
@@ -433,6 +423,16 @@ export default function App() {
                           model: { ...editingSpec.model, apiEndpoint: event.target.value }
                         })
                       }
+                    />
+                  </label>
+                  <label>
+                    API Key
+                    <input
+                      type="password"
+                      aria-label="Agent API Key"
+                      value={editAgentApiKey}
+                      onChange={(event) => setEditAgentApiKey(event.target.value)}
+                      placeholder={activeAgent.hasApiKey ? "Configured — leave blank to keep" : "sk-…"}
                     />
                   </label>
                 </div>
