@@ -6,6 +6,62 @@ import { runChatMigrations } from "../chat-migrations";
 import { PgChatStore } from "../chat-store";
 import { createApiApp } from "../index";
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function drainPendingTaskExecutions(app: import("express").Express): Promise<void> {
+  await Promise.all([...((app.locals.pendingTaskExecutions as Set<Promise<void>>) ?? [])]);
+}
+
+const completedRunnerResult: RunnerAgentTaskResponse = {
+  status: "completed",
+  finalMarkdown: "Done",
+  rawOutputRedacted: "",
+  sessionId: null,
+  workDir: null,
+  taskMessages: []
+};
+
+type SseEvent = { event: string; data: unknown; id: string | null };
+
+function parseSseEvents(text: string): SseEvent[] {
+  return text
+    .split("\n\n")
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      let event = "message";
+      let id: string | null = null;
+      const dataLines: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+        else if (line.startsWith("id:")) id = line.slice("id:".length).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice("data:".length).trim());
+      }
+      const dataRaw = dataLines.join("\n");
+      let data: unknown = dataRaw;
+      try {
+        data = JSON.parse(dataRaw);
+      } catch {
+        // keep raw string for non-JSON payloads (e.g. keepalive comments)
+      }
+      return { event, data, id };
+    });
+}
+
 describe("API orchestrator", () => {
   let pool: import("pg").Pool;
   let store: PgChatStore;
@@ -54,6 +110,39 @@ describe("API orchestrator", () => {
     expect(listResponse.body[0].title).toBe("Acme research");
   });
 
+  it("schedules the agent task and returns a 202 scheduled response without awaiting the runner", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "Scheduled send" })
+      .expect(201);
+
+    const res = await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Use sk-test to inspect Acme." })
+      .expect(202);
+
+    expect(res.body.chatSessionId).toBe(sessionResponse.body.id);
+    expect(res.body.userMessage.role).toBe("user");
+    expect(res.body.userMessage.contentMarkdown).toContain("[REDACTED]");
+    expect(JSON.stringify(res.body)).not.toContain("sk-test");
+    expect(res.body.task.status).toBe("running");
+    expect(res.body.eventsUrl).toBe(`/api/chat-sessions/${sessionResponse.body.id}/events`);
+
+    // Runner has not resolved: no assistant message yet, task still running.
+    const detail = await store.getChatSessionDetail(sessionResponse.body.id);
+    expect(detail?.messages).toHaveLength(1);
+    expect(detail?.messages[0].role).toBe("user");
+    expect(detail?.latestTask?.status).toBe("running");
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
   it("persists first-turn chat messages, task state, and redacts runtime secrets", async () => {
     const runAgentTask = vi.fn<
       (request: {
@@ -94,7 +183,8 @@ describe("API orchestrator", () => {
       .send({
         message: "Use sk-test to inspect Acme."
       })
-      .expect(201);
+      .expect(202);
+    await drainPendingTaskExecutions(app);
 
     expect(runAgentTask).toHaveBeenCalledTimes(1);
     expect(runAgentTask).toHaveBeenCalledWith(
@@ -110,13 +200,9 @@ describe("API orchestrator", () => {
     expect(callArgs.agentSpec.identity.name).toBe(defaultAgentSpec.identity.name);
     expect(callArgs.agentSpec.model.apiKey).toBe("sk-test");
 
-    expect(messageResponse.body.messages).toHaveLength(2);
-    expect(messageResponse.body.messages[0].role).toBe("user");
-    expect(messageResponse.body.messages[0].contentMarkdown).toContain("[REDACTED]");
-    expect(messageResponse.body.messages[1].role).toBe("assistant");
-    expect(messageResponse.body.latestTask.status).toBe("completed");
-    expect(messageResponse.body.latestTask.sessionId).toBe("runner-session-1");
-    expect(messageResponse.body.latestTask.workDir).toBe("/tmp/session-1");
+    expect(messageResponse.body.userMessage.role).toBe("user");
+    expect(messageResponse.body.userMessage.contentMarkdown).toContain("[REDACTED]");
+    expect(messageResponse.body.task.status).toBe("running");
     expect(JSON.stringify(messageResponse.body)).not.toContain("sk-test");
 
     const detailResponse = await request(app)
@@ -167,14 +253,16 @@ describe("API orchestrator", () => {
       .send({
         message: "First turn"
       })
-      .expect(201);
+      .expect(202);
+    await drainPendingTaskExecutions(app);
 
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
         message: "Second turn"
       })
-      .expect(201);
+      .expect(202);
+    await drainPendingTaskExecutions(app);
 
     expect(runAgentTask).toHaveBeenNthCalledWith(
       2,
@@ -225,7 +313,8 @@ describe("API orchestrator", () => {
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({ message: "Hello" })
-      .expect(201);
+      .expect(202);
+    await drainPendingTaskExecutions(app);
 
     expect(runAgentTask.mock.calls[0]![0].runtimeSecrets).toEqual({ apiKey: "sk-stored" });
     expect(runAgentTask.mock.calls[0]![0].agentSpec.model.apiKey).toBe("sk-stored");
@@ -273,7 +362,8 @@ describe("API orchestrator", () => {
       .send({
         message: "Run with events."
       })
-      .expect(201);
+      .expect(202);
+    await drainPendingTaskExecutions(app);
 
     expect(runAgentTask).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -329,6 +419,99 @@ describe("API orchestrator", () => {
     const detail = await store.getChatSessionDetail(session.id);
     expect(detail?.taskMessages).toHaveLength(1);
     expect(detail?.taskMessages[0].content).toBe("streamed [REDACTED]");
+  });
+
+  describe("SSE task event stream", () => {
+    async function scheduledSession(app: import("express").Express, runner: ReturnType<typeof vi.fn>) {
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+      const session = await store.createChatSession({ agentId: agent.id, title: "SSE" });
+      return session.id;
+    }
+
+    it("replays a snapshot then a terminal event for an already-completed task", async () => {
+      const runAgentTask = vi.fn().mockResolvedValue({
+        status: "completed",
+        finalMarkdown: "All done",
+        rawOutputRedacted: "",
+        sessionId: null,
+        workDir: null,
+        taskMessages: [{ type: "status", tool: null, content: "Working", inputJson: null, output: null }]
+      } satisfies RunnerAgentTaskResponse);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const sessionId = await scheduledSession(app, runAgentTask);
+
+      const scheduled = await request(app)
+        .post(`/api/chat-sessions/${sessionId}/messages`)
+        .send({ message: "Go" })
+        .expect(202);
+      await drainPendingTaskExecutions(app);
+
+      const res = await request(app).get(`/api/chat-sessions/${sessionId}/events`).expect(200);
+      expect(res.headers["content-type"]).toContain("text/event-stream");
+
+      const events = parseSseEvents(res.text);
+      const snapshot = events.find((e) => e.event === "task_snapshot");
+      expect(snapshot).toBeTruthy();
+      expect((snapshot!.data as { task: { id: string; status: string } }).task.id).toBe(scheduled.body.task.id);
+      expect((snapshot!.data as { taskMessages: unknown[] }).taskMessages).toHaveLength(1);
+
+      const terminal = events.find((e) => e.event === "task_completed");
+      expect(terminal).toBeTruthy();
+      expect((terminal!.data as { taskId: string; status: string }).status).toBe("completed");
+    });
+
+    it("returns 404 for SSE on a missing chat session", async () => {
+      const app = createApiApp({ chatStore: store });
+      await request(app).get("/api/chat-sessions/missing/events").expect(404);
+    });
+
+    it("pushes a live task_message with seq then a terminal event for a running task", async () => {
+      process.env.RUNNER_EVENT_TOKEN = "runner-token";
+      const deferred = createDeferred<RunnerAgentTaskResponse>();
+      const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const sessionId = await scheduledSession(app, runAgentTask);
+
+      const scheduled = await request(app)
+        .post(`/api/chat-sessions/${sessionId}/messages`)
+        .send({ message: "Go" })
+        .expect(202);
+      const taskId = scheduled.body.task.id as string;
+
+      // Open the SSE stream without awaiting; it ends when the task terminates.
+      const streamPromise = request(app).get(`/api/chat-sessions/${sessionId}/events`);
+
+      // Runner pushes a live event through the internal endpoint.
+      await request(app)
+        .post("/internal/runner/task-events")
+        .set("authorization", "Bearer runner-token")
+        .send({
+          taskId,
+          messages: [{ type: "status", tool: null, content: "Live update", inputJson: null, output: null }]
+        })
+        .expect(202);
+
+      // Runner finishes → background completion publishes the terminal event and ends the stream.
+      deferred.resolve({
+        status: "completed",
+        finalMarkdown: "Finished",
+        rawOutputRedacted: "",
+        sessionId: null,
+        workDir: null,
+        taskMessages: []
+      });
+      await drainPendingTaskExecutions(app);
+
+      const res = await streamPromise;
+      const events = parseSseEvents(res.text);
+
+      const liveMessage = events.find((e) => e.event === "task_message");
+      expect(liveMessage).toBeTruthy();
+      expect((liveMessage!.data as { taskMessage: { content: string } }).taskMessage.content).toBe("Live update");
+      expect(liveMessage!.id).toBe(String((liveMessage!.data as { seq: number }).seq));
+
+      expect(events.some((e) => e.event === "task_completed")).toBe(true);
+    });
   });
 
   describe("agent CRUD endpoints", () => {
@@ -504,7 +687,8 @@ describe("API orchestrator", () => {
       const res = await request(app)
         .post(`/api/chat-sessions/${session.body.id}/messages`)
         .send({ message: "Hello" })
-        .expect(201);
+        .expect(202);
+      await drainPendingTaskExecutions(app);
 
       expect(res.body).toBeTruthy();
     });
@@ -543,7 +727,8 @@ describe("API orchestrator", () => {
       await request(app)
         .post(`/api/chat-sessions/${session.body.id}/messages`)
         .send({ message: "Hi" })
-        .expect(201);
+        .expect(202);
+      await drainPendingTaskExecutions(app);
 
       const calledAgentSpec = runAgentTask.mock.calls[0]![0].agentSpec;
       expect(calledAgentSpec.identity.name).toBe("Renamed Agent");

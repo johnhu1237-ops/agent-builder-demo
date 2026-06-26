@@ -5,9 +5,14 @@ import {
   exportAgentSpec,
   validateAgentSpec,
   type AgentSpec,
+  type AgentTask,
   type AgentTaskStatus,
+  type ChatSessionDetail,
   type CreateAgentRequest,
   type RunnerTaskEventRequest,
+  type TaskMessageEvent,
+  type TaskSnapshotEvent,
+  type TaskTerminalEvent,
   type UpdateAgentRequest
 } from "@agent-builder/shared";
 import { getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
@@ -16,6 +21,7 @@ import { PgChatStore } from "./chat-store";
 import { redactSecrets } from "./redaction";
 import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
 import { decryptApiKey, validateEncryptionKey } from "./encryption";
+import { TaskEventBroadcaster } from "./task-events";
 
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
@@ -40,6 +46,102 @@ function statusFromError(message: string): Exclude<AgentTaskStatus, "pending" | 
   return message.toLowerCase().includes("timed out") ? "timed_out" : "failed";
 }
 
+const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
+
+function isTerminalTaskStatus(status: AgentTaskStatus): boolean {
+  return terminalTaskStatuses.has(status);
+}
+
+function sendSse(res: express.Response, event: string, data: unknown, id?: string): void {
+  if (id !== undefined) {
+    res.write(`id: ${id}\n`);
+  }
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+async function executeAgentTask(params: {
+  chatStore: PgChatStore;
+  runnerClient: RunnerClient;
+  taskEvents: TaskEventBroadcaster;
+  detail: ChatSessionDetail;
+  task: AgentTask;
+  message: string;
+  apiKey: string;
+  agentSpec: AgentSpec;
+}): Promise<void> {
+  const { chatStore, runnerClient, taskEvents, detail, task, message, apiKey, agentSpec } = params;
+  const publishTerminal = (finalTask: AgentTask) => {
+    taskEvents.publish(detail.id, {
+      type: "terminal",
+      payload: {
+        taskId: finalTask.id,
+        status: finalTask.status as TaskTerminalEvent["status"],
+        error: finalTask.error
+      }
+    });
+  };
+  try {
+    const result = await runnerClient.runAgentTask({
+      chatSessionId: detail.id,
+      taskId: task.id,
+      message,
+      agentSpec,
+      runtimeSecrets: { apiKey },
+      sessionId: detail.sessionId,
+      workDir: detail.workDir,
+      runnerEvents: getRunnerEventToken()
+        ? {
+            endpoint: runnerEventEndpoint(),
+            token: getRunnerEventToken()!
+          }
+        : null
+    });
+    if (result.status === "completed" && result.finalMarkdown.trim()) {
+      const finalTask = await chatStore.completeAgentTask(task.id, {
+        status: "completed",
+        resultMarkdown: redactSecrets(result.finalMarkdown, [apiKey]),
+        rawOutputRedacted: redactSecrets(result.rawOutputRedacted, [apiKey]),
+        sessionId: result.sessionId,
+        workDir: result.workDir,
+        taskMessages: result.taskMessages.map((item) => ({
+          ...item,
+          content: redactSecrets(item.content, [apiKey]),
+          output: item.output ? redactSecrets(item.output, [apiKey]) : null
+        }))
+      });
+      publishTerminal(finalTask);
+    } else {
+      const finalTask = await chatStore.failAgentTask(task.id, {
+        status: result.status === "timed_out" ? "timed_out" : "failed",
+        error: result.finalMarkdown || "Runner did not produce assistant content",
+        rawOutputRedacted: redactSecrets(result.rawOutputRedacted, [apiKey]),
+        sessionId: result.sessionId,
+        workDir: result.workDir,
+        taskMessages: result.taskMessages.map((item) => ({
+          ...item,
+          content: redactSecrets(item.content, [apiKey]),
+          output: item.output ? redactSecrets(item.output, [apiKey]) : null
+        }))
+      });
+      publishTerminal(finalTask);
+    }
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : "Runner failed";
+    const finalTask = await chatStore.failAgentTask(task.id, {
+      status: statusFromError(messageText),
+      error: redactSecrets(messageText, [apiKey]),
+      rawOutputRedacted: "",
+      sessionId: null,
+      workDir: null,
+      taskMessages: [
+        { type: "error", tool: null, content: redactSecrets(messageText, [apiKey]), inputJson: null, output: null }
+      ]
+    });
+    publishTerminal(finalTask);
+  }
+}
+
 export function createApiApp(deps: ApiDependencies = {}) {
   const app = express();
   const chatStore = deps.chatStore;
@@ -51,6 +153,12 @@ export function createApiApp(deps: ApiDependencies = {}) {
       deps.runAgentTask ??
       createHttpRunnerClient(process.env.RUNNER_BASE_URL ?? "http://localhost:4101").runAgentTask
   };
+
+  const pendingTaskExecutions = new Set<Promise<void>>();
+  app.locals.pendingTaskExecutions = pendingTaskExecutions;
+
+  const taskEvents = new TaskEventBroadcaster();
+  app.locals.taskEvents = taskEvents;
 
   app.use(cors());
   app.use(express.json({ limit: "1mb" }));
@@ -223,69 +331,33 @@ export function createApiApp(deps: ApiDependencies = {}) {
       agentSpec: validation.data
     });
 
-    await chatStore.markAgentTaskRunning(task.id);
+    const runningTask = (await chatStore.markAgentTaskRunning(task.id)) ?? task;
 
-    try {
-      const result = await runnerClient.runAgentTask({
-        chatSessionId: detail.id,
-        taskId: task.id,
-        message,
-        agentSpec: validation.data,
-        runtimeSecrets: { apiKey },
-        sessionId: detail.sessionId,
-        workDir: detail.workDir,
-        runnerEvents: getRunnerEventToken()
-          ? {
-              endpoint: runnerEventEndpoint(),
-              token: getRunnerEventToken()!
-            }
-          : null
+    const execution = executeAgentTask({
+      chatStore,
+      runnerClient,
+      taskEvents,
+      detail,
+      task: runningTask,
+      message,
+      apiKey,
+      agentSpec: validation.data
+    });
+    const tracked = execution
+      .catch((error) => {
+        console.error(`Background agent task ${task.id} failed:`, error);
+      })
+      .finally(() => {
+        pendingTaskExecutions.delete(tracked);
       });
-      if (result.status === "completed" && result.finalMarkdown.trim()) {
-        await chatStore.completeAgentTask(task.id, {
-          status: "completed",
-          resultMarkdown: redactSecrets(result.finalMarkdown, [apiKey]),
-          rawOutputRedacted: redactSecrets(result.rawOutputRedacted, [apiKey]),
-          sessionId: result.sessionId,
-          workDir: result.workDir,
-          taskMessages: result.taskMessages.map((item) => ({
-            ...item,
-            content: redactSecrets(item.content, [apiKey]),
-            output: item.output ? redactSecrets(item.output, [apiKey]) : null
-          }))
-        });
-      } else {
-        await chatStore.failAgentTask(task.id, {
-          status: result.status === "timed_out" ? "timed_out" : "failed",
-          error: result.finalMarkdown || "Runner did not produce assistant content",
-          rawOutputRedacted: redactSecrets(result.rawOutputRedacted, [apiKey]),
-          sessionId: result.sessionId,
-          workDir: result.workDir,
-          taskMessages: result.taskMessages.map((item) => ({
-            ...item,
-            content: redactSecrets(item.content, [apiKey]),
-            output: item.output ? redactSecrets(item.output, [apiKey]) : null
-          }))
-        });
-      }
-    } catch (error) {
-      const messageText = error instanceof Error ? error.message : "Runner failed";
-      await chatStore.failAgentTask(task.id, {
-        status: statusFromError(messageText),
-        error: redactSecrets(messageText, [apiKey]),
-        rawOutputRedacted: "",
-        sessionId: null,
-        workDir: null,
-        taskMessages: [
-          { type: "error", tool: null, content: redactSecrets(messageText, [apiKey]), inputJson: null, output: null }
-        ]
-      });
-      const failedDetail = await chatStore.getChatSessionDetail(detail.id);
-      res.status(500).json(failedDetail);
-      return;
-    }
+    pendingTaskExecutions.add(tracked);
 
-    res.status(201).json(await chatStore.getChatSessionDetail(detail.id));
+    res.status(202).json({
+      chatSessionId: detail.id,
+      userMessage,
+      task: runningTask,
+      eventsUrl: `/api/chat-sessions/${detail.id}/events`
+    });
   });
 
   app.get("/api/chat-sessions/:id/events", async (req, res) => {
@@ -294,7 +366,46 @@ export function createApiApp(deps: ApiDependencies = {}) {
       res.status(404).json(stableError("Chat session not found"));
       return;
     }
-    res.json({ task: detail.latestTask, taskMessages: detail.taskMessages });
+
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    const snapshot: TaskSnapshotEvent = { task: detail.latestTask, taskMessages: detail.taskMessages };
+    sendSse(res, "task_snapshot", snapshot);
+
+    for (const msg of detail.taskMessages) {
+      const event: TaskMessageEvent = { taskId: msg.taskId, seq: msg.seq, taskMessage: msg };
+      sendSse(res, "task_message", event, String(msg.seq));
+    }
+
+    const latestTask = detail.latestTask;
+    if (latestTask && isTerminalTaskStatus(latestTask.status)) {
+      const terminal: TaskTerminalEvent = {
+        taskId: latestTask.id,
+        status: latestTask.status as TaskTerminalEvent["status"],
+        error: latestTask.error
+      };
+      sendSse(res, `task_${terminal.status}`, terminal);
+      res.end();
+      return;
+    }
+
+    const unsubscribe = taskEvents.subscribe(detail.id, (event) => {
+      if (event.type === "task_message") {
+        sendSse(res, "task_message", event.payload, String(event.payload.seq));
+      } else if (event.type === "terminal") {
+        sendSse(res, `task_${event.payload.status}`, event.payload);
+        unsubscribe();
+        res.end();
+      }
+    });
+
+    req.on("close", () => {
+      unsubscribe();
+    });
   });
 
   app.get("/api/agent-tasks/:id", async (_req, res) => {
@@ -314,7 +425,15 @@ export function createApiApp(deps: ApiDependencies = {}) {
     }
 
     try {
-      await chatStore.appendRunnerTaskMessages(body.taskId, body.messages, body.secretValues ?? []);
+      const { chatSessionId, messages: inserted } = await chatStore.appendRunnerTaskMessages(
+        body.taskId,
+        body.messages,
+        body.secretValues ?? []
+      );
+      for (const msg of inserted) {
+        const event: TaskMessageEvent = { taskId: body.taskId, seq: msg.seq, taskMessage: msg };
+        taskEvents.publish(chatSessionId, { type: "task_message", payload: event });
+      }
       res.status(202).json({ ok: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to append runner task events";

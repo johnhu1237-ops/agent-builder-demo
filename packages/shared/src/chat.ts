@@ -71,6 +71,30 @@ export type SendChatMessageRequest = {
   message: string;
 };
 
+export type ScheduleChatMessageResponse = {
+  chatSessionId: string;
+  userMessage: ChatMessage;
+  task: AgentTask;
+  eventsUrl: string;
+};
+
+export type TaskSnapshotEvent = {
+  task: AgentTask | null;
+  taskMessages: TaskMessage[];
+};
+
+export type TaskMessageEvent = {
+  taskId: string;
+  seq: number;
+  taskMessage: TaskMessage;
+};
+
+export type TaskTerminalEvent = {
+  taskId: string;
+  status: Extract<AgentTaskStatus, "completed" | "failed" | "timed_out" | "cancelled">;
+  error?: string | null;
+};
+
 export type RunnerEventsTarget = {
   endpoint: string;
   token: string;

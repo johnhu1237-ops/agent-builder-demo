@@ -207,9 +207,13 @@ function pickMissingText(current: string | null, incoming: string | null): strin
   return hasNonEmptyText(incoming) ? incoming : current;
 }
 
-async function insertTaskMessages(db: Queryable, taskId: string, messages: RunnerTaskMessage[]): Promise<void> {
+async function insertTaskMessages(
+  db: Queryable,
+  taskId: string,
+  messages: RunnerTaskMessage[]
+): Promise<TaskMessage[]> {
   if (messages.length === 0) {
-    return;
+    return [];
   }
 
   const nextSeqResult = await db.query<{ next_seq: number }>(
@@ -222,12 +226,14 @@ async function insertTaskMessages(db: Queryable, taskId: string, messages: Runne
   );
   const startSeq = Number(nextSeqResult.rows[0]?.next_seq ?? 0);
 
+  const inserted: TaskMessage[] = [];
   for (const [index, message] of messages.entries()) {
     const sanitizedMessage = redactTaskMessage(message);
-    await db.query(
+    const result = await db.query<TaskMessageRow>(
       `
         insert into task_message (id, task_id, seq, type, tool, content, input_json, output)
         values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning *
       `,
       [
         nanoid(),
@@ -240,7 +246,9 @@ async function insertTaskMessages(db: Queryable, taskId: string, messages: Runne
         sanitizedMessage.output
       ]
     );
+    inserted.push(mapTaskMessage(result.rows[0]));
   }
+  return inserted;
 }
 
 function isTerminalTaskStatus(status: AgentTaskStatus): boolean {
@@ -774,11 +782,7 @@ export class PgChatStore {
     taskId: string,
     messages: RunnerTaskMessage[],
     secretValues: string[] = []
-  ): Promise<void> {
-    if (messages.length === 0) {
-      return;
-    }
-
+  ): Promise<{ chatSessionId: string; messages: TaskMessage[] }> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
@@ -790,6 +794,11 @@ export class PgChatStore {
         throw new Error(`Cannot append task messages to terminal task: ${taskId}`);
       }
 
+      if (messages.length === 0) {
+        await client.query("commit");
+        return { chatSessionId: task.chat_session_id, messages: [] };
+      }
+
       const redactedMessages = messages.map((message) => ({
         ...message,
         content: redactSecrets(message.content, secretValues),
@@ -797,9 +806,10 @@ export class PgChatStore {
         output: message.output ? redactSecrets(message.output, secretValues) : null
       }));
 
-      await insertTaskMessages(client, taskId, redactedMessages);
+      const inserted = await insertTaskMessages(client, taskId, redactedMessages);
       await this.touchChatSession(task.chat_session_id);
       await client.query("commit");
+      return { chatSessionId: task.chat_session_id, messages: inserted };
     } catch (error) {
       await client.query("rollback");
       throw error;
