@@ -132,6 +132,7 @@ export default function App() {
           name: detail.agentName,
           description: "",
           spec: defaultAgentSpec,
+          hasApiKey: false,
           createdAt: "",
           updatedAt: ""
         });
