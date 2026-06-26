@@ -27,6 +27,13 @@ pnpm typecheck
 pnpm build
 ```
 
+## Environment
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | prod | Postgres connection string for chat persistence. |
+| `LLM_API_KEY_ENCRYPTION_KEY` | yes | Master key for encrypting LLM API keys at rest. Must be a 64-character hex string (32 bytes). Generate with `openssl rand -hex 32`. **Back this up securely — losing it means losing access to all stored API keys.** The server refuses to start without it. |
+
 ## Deployment
 
 See `docs/railway-deployment.md`.
