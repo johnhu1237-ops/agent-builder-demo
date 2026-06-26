@@ -277,6 +277,128 @@ describe("multi-agent UI", () => {
     await waitFor(() => expect(screen.getByLabelText("Agent name")).toBeInTheDocument());
   });
 
+  it("disables the composer while a task is running and re-enables after the task terminates", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Long task");
+
+    const sendBtn = screen.getByRole("button", { name: /^Send$/ });
+    await user.click(sendBtn);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).toBeDisabled();
+    });
+    expect(
+      screen.getByRole("button", { name: /Running|Sending|Send/i })
+    ).toBeDisabled();
+
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(
+          sessionDetailFixture({
+            messages: [
+              {
+                id: "msg_1",
+                chatSessionId: "chat_1",
+                role: "user",
+                contentMarkdown: "Long task",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              }
+            ],
+            latestTask: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "completed",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: "Done",
+              rawOutputRedacted: "",
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString()
+            },
+            taskMessages: []
+          })
+        );
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([sessionFixture()]);
+      }
+      return jsonResponse(null, 404);
+    });
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+    const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+    source.emit("task_completed", { taskId: "task_1", status: "completed" });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+    expect(screen.getByRole("button", { name: /^Send$/ })).not.toBeDisabled();
+  });
+
+  it("surfaces a clear error when the API rejects a send with a 409 conflict", async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (url.endsWith("/api/agents") && method === "GET") {
+        return jsonResponse([agentFixture()]);
+      }
+      if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(agentFixture());
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "POST") {
+        return jsonResponse(sessionFixture(), 201);
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([]);
+      }
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(sessionDetailFixture());
+      }
+      if (/\/api\/chat-sessions\/[^/]+\/messages$/.test(url) && method === "POST") {
+        return jsonResponse(
+          { error: "A task is already running in this chat session." },
+          409
+        );
+      }
+      return jsonResponse(null, 404);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Hello");
+
+    const sendBtn = screen.getByRole("button", { name: /^Send$/ });
+    await user.click(sendBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/already running/i)).toBeInTheDocument();
+    });
+  });
+
   it("optimistically appends user message, streams task events, and refetches on terminal", async () => {
     render(<App />);
     const user = userEvent.setup();

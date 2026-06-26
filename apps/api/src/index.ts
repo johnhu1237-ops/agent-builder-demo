@@ -3,6 +3,7 @@ import express from "express";
 import { Pool } from "pg";
 import {
   exportAgentSpec,
+  isTerminalTaskStatus,
   validateAgentSpec,
   type AgentSpec,
   type AgentTask,
@@ -44,12 +45,6 @@ function stableError(message: string) {
 
 function statusFromError(message: string): Exclude<AgentTaskStatus, "pending" | "running" | "completed" | "cancelled"> {
   return message.toLowerCase().includes("timed out") ? "timed_out" : "failed";
-}
-
-const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
-
-function isTerminalTaskStatus(status: AgentTaskStatus): boolean {
-  return terminalTaskStatuses.has(status);
 }
 
 function sendSse(res: express.Response, event: string, data: unknown, id?: string): void {
@@ -156,6 +151,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
 
   const pendingTaskExecutions = new Set<Promise<void>>();
   app.locals.pendingTaskExecutions = pendingTaskExecutions;
+
+  const sendingSessions = new Set<string>();
 
   const taskEvents = new TaskEventBroadcaster();
   app.locals.taskEvents = taskEvents;
@@ -277,87 +274,106 @@ export function createApiApp(deps: ApiDependencies = {}) {
       return;
     }
 
-    const agent = await chatStore.getAgent(detail.agentId);
-    if (!agent) {
-      res.status(500).json(stableError("Agent not found for this session"));
-      return;
-    }
-
-    if (!agent.encryptedApiKey) {
+    if (detail.latestTask && !isTerminalTaskStatus(detail.latestTask.status)) {
       res
-        .status(400)
-        .json(stableError("Agent API key not configured. Please update the agent settings."));
+        .status(409)
+        .json(stableError("A task is already running in this chat session."));
       return;
     }
 
-    const message = String(req.body.message ?? "").trim();
-    if (!message) {
-      res.status(400).json(stableError("Message is required"));
+    if (sendingSessions.has(detail.id)) {
+      res
+        .status(409)
+        .json(stableError("A task is already running in this chat session."));
       return;
     }
+    sendingSessions.add(detail.id);
 
-    let apiKey: string;
     try {
-      apiKey = decryptApiKey(agent.encryptedApiKey);
-    } catch (error) {
-      console.error(`Decryption failed for agent ${agent.id}:`, error);
-      res.status(500).json(stableError("Failed to decrypt API key for agent"));
-      return;
-    }
-
-    const agentSpec: AgentSpec = {
-      ...agent.spec,
-      model: {
-        ...agent.spec.model,
-        apiKey
+      const agent = await chatStore.getAgent(detail.agentId);
+      if (!agent) {
+        res.status(500).json(stableError("Agent not found for this session"));
+        return;
       }
-    };
 
-    const validation = validateAgentSpec(agentSpec);
-    if (!validation.success) {
-      res.status(400).json(stableError(validation.error.message));
-      return;
-    }
+      if (!agent.encryptedApiKey) {
+        res
+          .status(400)
+          .json(stableError("Agent API key not configured. Please update the agent settings."));
+        return;
+      }
 
-    const userMessage = await chatStore.createChatMessage({
-      chatSessionId: detail.id,
-      role: "user",
-      contentMarkdown: redactSecrets(message, [apiKey]),
-      taskId: null
-    });
-    const task = await chatStore.createAgentTask({
-      chatSessionId: detail.id,
-      triggerMessageId: userMessage.id,
-      agentSpec: validation.data
-    });
+      const message = String(req.body.message ?? "").trim();
+      if (!message) {
+        res.status(400).json(stableError("Message is required"));
+        return;
+      }
 
-    const runningTask = (await chatStore.markAgentTaskRunning(task.id)) ?? task;
+      let apiKey: string;
+      try {
+        apiKey = decryptApiKey(agent.encryptedApiKey);
+      } catch (error) {
+        console.error(`Decryption failed for agent ${agent.id}:`, error);
+        res.status(500).json(stableError("Failed to decrypt API key for agent"));
+        return;
+      }
 
-    const execution = executeAgentTask({
-      chatStore,
-      runnerClient,
-      taskEvents,
-      detail,
-      task: runningTask,
-      message,
-      apiKey,
-      agentSpec: validation.data
-    });
-    const tracked = execution
-      .catch((error) => {
-        console.error(`Background agent task ${task.id} failed:`, error);
-      })
-      .finally(() => {
-        pendingTaskExecutions.delete(tracked);
+      const agentSpec: AgentSpec = {
+        ...agent.spec,
+        model: {
+          ...agent.spec.model,
+          apiKey
+        }
+      };
+
+      const validation = validateAgentSpec(agentSpec);
+      if (!validation.success) {
+        res.status(400).json(stableError(validation.error.message));
+        return;
+      }
+
+      const userMessage = await chatStore.createChatMessage({
+        chatSessionId: detail.id,
+        role: "user",
+        contentMarkdown: redactSecrets(message, [apiKey]),
+        taskId: null
       });
-    pendingTaskExecutions.add(tracked);
+      const task = await chatStore.createAgentTask({
+        chatSessionId: detail.id,
+        triggerMessageId: userMessage.id,
+        agentSpec: validation.data
+      });
 
-    res.status(202).json({
-      chatSessionId: detail.id,
-      userMessage,
-      task: runningTask,
-      eventsUrl: `/api/chat-sessions/${detail.id}/events`
-    });
+      const runningTask = (await chatStore.markAgentTaskRunning(task.id)) ?? task;
+
+      const execution = executeAgentTask({
+        chatStore,
+        runnerClient,
+        taskEvents,
+        detail,
+        task: runningTask,
+        message,
+        apiKey,
+        agentSpec: validation.data
+      });
+      const tracked = execution
+        .catch((error) => {
+          console.error(`Background agent task ${task.id} failed:`, error);
+        })
+        .finally(() => {
+          pendingTaskExecutions.delete(tracked);
+        });
+      pendingTaskExecutions.add(tracked);
+
+      res.status(202).json({
+        chatSessionId: detail.id,
+        userMessage,
+        task: runningTask,
+        eventsUrl: `/api/chat-sessions/${detail.id}/events`
+      });
+    } finally {
+      sendingSessions.delete(detail.id);
+    }
   });
 
   app.get("/api/chat-sessions/:id/events", async (req, res) => {
