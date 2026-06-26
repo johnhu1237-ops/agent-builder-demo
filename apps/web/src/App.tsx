@@ -5,6 +5,7 @@ import {
   appRegistry,
   skillRegistry,
   defaultAgentSpec,
+  isTerminalTaskStatus,
   type Agent,
   type AgentSpec,
   type ChatSession,
@@ -180,6 +181,7 @@ export default function App() {
     const trimmed = message.trim();
     if (!trimmed) return;
     if (!activeSession) return;
+    if (activeSession.latestTask && !isTerminalTaskStatus(activeSession.latestTask.status)) return;
 
     setSendState("sending");
     setError(null);
@@ -613,29 +615,44 @@ export default function App() {
               ))}
             </div>
 
-            <div className="message-input-area">
-              <textarea
-                rows={5}
-                aria-label="Message"
-                placeholder="Type your message…"
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                    event.preventDefault();
-                    handleSendMessage();
-                  }
-                }}
-              />
-              <button
-                className="send-btn"
-                type="button"
-                onClick={handleSendMessage}
-                disabled={sendState === "sending"}
-              >
-                {sendState === "sending" ? "Sending…" : "Send"}
-              </button>
-            </div>
+            {(() => {
+              const isTaskRunning = Boolean(
+                activeSession.latestTask && !isTerminalTaskStatus(activeSession.latestTask.status)
+              );
+              const composerDisabled = sendState === "sending" || isTaskRunning;
+              const buttonLabel = isTaskRunning
+                ? "Running…"
+                : sendState === "sending"
+                  ? "Sending…"
+                  : "Send";
+              return (
+                <div className="message-input-area">
+                  <textarea
+                    rows={5}
+                    aria-label="Message"
+                    placeholder={isTaskRunning ? "Waiting for the current task to finish…" : "Type your message…"}
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    disabled={composerDisabled}
+                    onKeyDown={(event) => {
+                      if (composerDisabled) return;
+                      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                        event.preventDefault();
+                        handleSendMessage();
+                      }
+                    }}
+                  />
+                  <button
+                    className="send-btn"
+                    type="button"
+                    onClick={handleSendMessage}
+                    disabled={composerDisabled}
+                  >
+                    {buttonLabel}
+                  </button>
+                </div>
+              );
+            })()}
 
             {error ? <div className="error-banner">{error}</div> : null}
 

@@ -137,3 +137,14 @@ export function createStatusTaskMessage(content: string): RunnerTaskMessage {
 export function createAssistantTaskMessage(content: string): RunnerTaskMessage {
   return { type: "text", tool: null, content, inputJson: null, output: null };
 }
+
+const terminalTaskStatuses = new Set<AgentTaskStatus>([
+  "completed",
+  "failed",
+  "timed_out",
+  "cancelled"
+]);
+
+export function isTerminalTaskStatus(status: AgentTaskStatus): boolean {
+  return terminalTaskStatuses.has(status);
+}

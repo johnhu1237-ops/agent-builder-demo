@@ -514,6 +514,85 @@ describe("API orchestrator", () => {
     });
   });
 
+  describe("single-flight chat session enforcement", () => {
+    it("rejects a second message while a task is still running in the same session", async () => {
+      const deferred = createDeferred<RunnerAgentTaskResponse>();
+      const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+      const session = await store.createChatSession({ agentId: agent.id, title: "Single-flight" });
+
+      await request(app)
+        .post(`/api/chat-sessions/${session.id}/messages`)
+        .send({ message: "First turn" })
+        .expect(202);
+
+      const rejected = await request(app)
+        .post(`/api/chat-sessions/${session.id}/messages`)
+        .send({ message: "Second turn while running" })
+        .expect(409);
+
+      expect(rejected.body.error).toMatch(/already running|in progress/i);
+      expect(runAgentTask).toHaveBeenCalledTimes(1);
+
+      // Only one user message and one task should exist for the session.
+      const detail = await store.getChatSessionDetail(session.id);
+      expect(detail?.messages.filter((m) => m.role === "user")).toHaveLength(1);
+      expect(detail?.latestTask?.status).toBe("running");
+
+      deferred.resolve(completedRunnerResult);
+      await drainPendingTaskExecutions(app);
+    });
+
+    it("accepts a new message after the previous task reaches a terminal status", async () => {
+      const runAgentTask = vi.fn().mockResolvedValue(completedRunnerResult);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+      const session = await store.createChatSession({ agentId: agent.id, title: "Follow-up after done" });
+
+      await request(app)
+        .post(`/api/chat-sessions/${session.id}/messages`)
+        .send({ message: "First turn" })
+        .expect(202);
+      await drainPendingTaskExecutions(app);
+
+      await request(app)
+        .post(`/api/chat-sessions/${session.id}/messages`)
+        .send({ message: "Second turn" })
+        .expect(202);
+      await drainPendingTaskExecutions(app);
+
+      expect(runAgentTask).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects concurrent duplicate sends that would create two running tasks", async () => {
+      const deferred = createDeferred<RunnerAgentTaskResponse>();
+      const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+      const session = await store.createChatSession({ agentId: agent.id, title: "Concurrent send" });
+
+      const [first, second] = await Promise.all([
+        request(app)
+          .post(`/api/chat-sessions/${session.id}/messages`)
+          .send({ message: "First" }),
+        request(app)
+          .post(`/api/chat-sessions/${session.id}/messages`)
+          .send({ message: "Second" })
+      ]);
+
+      const statuses = [first.status, second.status].sort();
+      expect(statuses).toEqual([202, 409]);
+      expect(runAgentTask).toHaveBeenCalledTimes(1);
+
+      const detail = await store.getChatSessionDetail(session.id);
+      expect(detail?.messages.filter((m) => m.role === "user")).toHaveLength(1);
+
+      deferred.resolve(completedRunnerResult);
+      await drainPendingTaskExecutions(app);
+    });
+  });
+
   describe("agent CRUD endpoints", () => {
     it("rejects creating an agent without an api key", async () => {
       const app = createApiApp({ chatStore: store });
