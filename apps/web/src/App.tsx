@@ -8,7 +8,9 @@ import {
   type Agent,
   type AgentSpec,
   type ChatSession,
-  type ChatSessionDetail
+  type ChatSessionDetail,
+  type TaskMessageEvent,
+  type TaskTerminalEvent
 } from "@agent-builder/shared";
 import { createExportPayload } from "./defaults";
 import { formatRelativeTime } from "./relative-time";
@@ -20,7 +22,8 @@ import {
   listChatSessions,
   createChatSession,
   getChatSession,
-  sendChatMessage
+  sendChatMessage,
+  createTaskEventSource
 } from "./api";
 
 type WorkspaceView = "empty" | "agent-config" | "chat";
@@ -51,6 +54,14 @@ export default function App() {
 
   const loadingIdRef = useRef<string | null>(null);
   const [loadingChatId, setLoadingChatId] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,15 +185,67 @@ export default function App() {
     setError(null);
 
     try {
-      const detail = await sendChatMessage({
+      const scheduled = await sendChatMessage({
         chatSessionId: activeSession.id,
         message: trimmed
       });
-      setActiveSession(detail);
+
+      const sessionId = scheduled.chatSessionId;
+      setActiveSession((prev) =>
+        prev && prev.id === sessionId
+          ? {
+              ...prev,
+              messages: [...prev.messages, scheduled.userMessage],
+              latestTask: scheduled.task,
+              taskMessages: []
+            }
+          : prev
+      );
       setMessage("");
-      const sessionList = await listChatSessions();
-      setSessions(sessionList);
       setSendState("idle");
+
+      eventSourceRef.current?.close();
+      const source = createTaskEventSource(sessionId);
+      eventSourceRef.current = source;
+
+      const handleTaskMessage = (rawEvent: MessageEvent) => {
+        try {
+          const data = JSON.parse(rawEvent.data) as TaskMessageEvent;
+          setActiveSession((prev) => {
+            if (!prev || prev.id !== sessionId) return prev;
+            if (prev.taskMessages.some((m) => m.id === data.taskMessage.id)) return prev;
+            return { ...prev, taskMessages: [...prev.taskMessages, data.taskMessage] };
+          });
+        } catch {
+          // ignore malformed events
+        }
+      };
+
+      const handleTerminal = (rawEvent: MessageEvent) => {
+        try {
+          JSON.parse(rawEvent.data) as TaskTerminalEvent;
+        } catch {
+          // continue with refetch anyway
+        }
+        source.close();
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null;
+        }
+        getChatSession(sessionId)
+          .then((detail) => {
+            setActiveSession((prev) => (prev && prev.id === sessionId ? detail : prev));
+          })
+          .catch(() => undefined);
+        listChatSessions()
+          .then((list) => setSessions(list))
+          .catch(() => undefined);
+      };
+
+      source.addEventListener("task_message", handleTaskMessage as EventListener);
+      source.addEventListener("task_completed", handleTerminal as EventListener);
+      source.addEventListener("task_failed", handleTerminal as EventListener);
+      source.addEventListener("task_timed_out", handleTerminal as EventListener);
+      source.addEventListener("task_cancelled", handleTerminal as EventListener);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
       setSendState("failed");
@@ -577,8 +640,11 @@ export default function App() {
             {error ? <div className="error-banner">{error}</div> : null}
 
             {activeSession.latestTask && activeSession.taskMessages.length > 0 ? (
-              <details className="trace">
-                <summary>Task Timeline</summary>
+              <details className="trace" open={activeSession.latestTask.status === "running"}>
+                <summary>
+                  Task Timeline
+                  {activeSession.latestTask.status === "running" ? " (running)" : ""}
+                </summary>
                 {activeSession.taskMessages.map((taskMessage) => (
                   <div key={taskMessage.id} className="trace-item">
                     <span className={`trace-type trace-${taskMessage.type}`}>{taskMessage.type}</span>

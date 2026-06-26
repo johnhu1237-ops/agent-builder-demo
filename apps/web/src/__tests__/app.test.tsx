@@ -7,6 +7,52 @@ import App from "../App";
 
 const fetchMock = vi.fn();
 
+type EventSourceListener = (event: MessageEvent) => void;
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  url: string;
+  readyState = 0;
+  private listeners = new Map<string, EventSourceListener[]>();
+
+  constructor(url: string) {
+    this.url = url;
+    this.readyState = 1;
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: EventSourceListener): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(listener);
+    this.listeners.set(type, list);
+  }
+
+  removeEventListener(type: string, listener: EventSourceListener): void {
+    const list = this.listeners.get(type) ?? [];
+    this.listeners.set(
+      type,
+      list.filter((l) => l !== listener)
+    );
+  }
+
+  close(): void {
+    this.readyState = 2;
+  }
+
+  emit(type: string, data: unknown): void {
+    const event = new MessageEvent(type, { data: JSON.stringify(data) });
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+
+  static reset(): void {
+    FakeEventSource.instances = [];
+  }
+}
+
+(global as Record<string, unknown>).EventSource = FakeEventSource;
+
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
 }
@@ -83,55 +129,34 @@ beforeEach(() => {
     if (/\/api\/chat-sessions\/[^/]+\/messages$/.test(url) && method === "POST") {
       const body = options?.body ? JSON.parse(options.body as string) : {};
       return jsonResponse(
-        sessionDetailFixture({
-          messages: [
-            {
-              id: "msg_1",
-              chatSessionId: "chat_1",
-              role: "user",
-              contentMarkdown: body.message ?? "",
-              taskId: "task_1",
-              createdAt: new Date().toISOString()
-            },
-            {
-              id: "msg_2",
-              chatSessionId: "chat_1",
-              role: "assistant",
-              contentMarkdown: "# Result\n\nDone.",
-              taskId: "task_1",
-              createdAt: new Date().toISOString()
-            }
-          ],
-          latestTask: {
+        {
+          chatSessionId: "chat_1",
+          userMessage: {
+            id: "msg_1",
+            chatSessionId: "chat_1",
+            role: "user",
+            contentMarkdown: body.message ?? "",
+            taskId: "task_1",
+            createdAt: new Date().toISOString()
+          },
+          task: {
             id: "task_1",
             chatSessionId: "chat_1",
             triggerMessageId: "msg_1",
             agentSpecSnapshot: defaultAgentSpec,
-            status: "completed",
+            status: "running",
             sessionId: null,
             workDir: null,
-            resultMarkdown: "# Result\n\nDone.",
-            rawOutputRedacted: "raw",
+            resultMarkdown: null,
+            rawOutputRedacted: null,
             error: null,
             createdAt: new Date().toISOString(),
             startedAt: new Date().toISOString(),
-            completedAt: new Date().toISOString()
+            completedAt: null
           },
-          taskMessages: [
-            {
-              id: "tm_1",
-              taskId: "task_1",
-              seq: 1,
-              type: "status",
-              tool: null,
-              content: "Completed",
-              inputJson: null,
-              output: null,
-              createdAt: new Date().toISOString()
-            }
-          ]
-        }),
-        201
+          eventsUrl: "/api/chat-sessions/chat_1/events"
+        },
+        202
       );
     }
 
@@ -144,6 +169,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  FakeEventSource.reset();
 });
 
 describe("multi-agent UI", () => {
@@ -249,5 +275,107 @@ describe("multi-agent UI", () => {
     const agentButtonAgain = screen.getByRole("button", { name: /Research Agent/ });
     await user.click(agentButtonAgain);
     await waitFor(() => expect(screen.getByLabelText("Agent name")).toBeInTheDocument());
+  });
+
+  it("optimistically appends user message, streams task events, and refetches on terminal", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Research Acme");
+
+    const sendBtn = screen.getByRole("button", { name: /^Send$/ });
+    await user.click(sendBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText("Research Acme")).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+
+    const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+
+    source.emit("task_message", {
+      taskId: "task_1",
+      seq: 0,
+      taskMessage: {
+        id: "tm_live_1",
+        taskId: "task_1",
+        seq: 0,
+        type: "status",
+        tool: null,
+        content: "Searching...",
+        inputJson: null,
+        output: null,
+        createdAt: new Date().toISOString()
+      }
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Searching...")).toBeInTheDocument();
+    });
+
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(
+          sessionDetailFixture({
+            messages: [
+              {
+                id: "msg_1",
+                chatSessionId: "chat_1",
+                role: "user",
+                contentMarkdown: "Research Acme",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              },
+              {
+                id: "msg_2",
+                chatSessionId: "chat_1",
+                role: "assistant",
+                contentMarkdown: "Acme report complete.",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              }
+            ],
+            latestTask: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "completed",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: "Acme report complete.",
+              rawOutputRedacted: "",
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString()
+            },
+            taskMessages: []
+          })
+        );
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([sessionFixture()]);
+      }
+      return jsonResponse(null, 404);
+    });
+
+    source.emit("task_completed", { taskId: "task_1", status: "completed" });
+
+    await waitFor(() => {
+      expect(screen.getByText("Acme report complete.")).toBeInTheDocument();
+    });
+    expect(source.readyState).toBe(2);
   });
 });

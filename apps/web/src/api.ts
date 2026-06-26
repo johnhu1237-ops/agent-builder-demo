@@ -1,4 +1,4 @@
-import type { Agent, ChatSession, ChatSessionDetail } from "@agent-builder/shared";
+import type { Agent, ChatSession, ChatSessionDetail, ScheduleChatMessageResponse } from "@agent-builder/shared";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4001";
 
@@ -71,14 +71,18 @@ export async function getChatSession(id: string): Promise<ChatSessionDetail> {
   return requestJson<ChatSessionDetail>(`/api/chat-sessions/${encodeURIComponent(id)}`);
 }
 
-// Message sending — no longer sends agentSpec (API fetches live spec from DB)
+// Message sending — returns 202 scheduled response; caller opens EventSource for streaming
 
 export async function sendChatMessage(input: {
   chatSessionId: string;
   message: string;
-}): Promise<ChatSessionDetail> {
-  return requestJson<ChatSessionDetail>(`/api/chat-sessions/${encodeURIComponent(input.chatSessionId)}/messages`, {
+}): Promise<ScheduleChatMessageResponse> {
+  return requestJson<ScheduleChatMessageResponse>(`/api/chat-sessions/${encodeURIComponent(input.chatSessionId)}/messages`, {
     method: "POST",
     body: JSON.stringify({ message: input.message })
   });
+}
+
+export function createTaskEventSource(chatSessionId: string): EventSource {
+  return new EventSource(`${BASE_URL}/api/chat-sessions/${encodeURIComponent(chatSessionId)}/events`);
 }
