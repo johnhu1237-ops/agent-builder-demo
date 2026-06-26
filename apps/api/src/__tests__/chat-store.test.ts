@@ -87,6 +87,17 @@ describe("PgChatStore", () => {
       expect(result.rows[0]?.agent_name).toBe(defaultAgentSpec.identity.name);
       expect(result.rows[0]?.agent_id).toBeTruthy();
     });
+
+    it("adds the encrypted_api_key column to agents", async () => {
+      const result = await pool.query<{ column_name: string }>(`
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'agents'
+          and column_name = 'encrypted_api_key'
+      `);
+      expect(result.rows.length).toBe(1);
+    });
   });
 
   it("repairs duplicate trigger tasks by keeping the richer terminal canonical task during migrations", async () => {

@@ -619,6 +619,16 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
   `
   );
 
+  await addColumnIfNeeded(
+    db,
+    "agents",
+    "encrypted_api_key",
+    `
+    alter table agents
+    add column if not exists encrypted_api_key text
+  `
+  );
+
   await backfillCreatedOrder(db, "chat_message");
   await backfillCreatedOrder(db, "agent_tasks");
 
