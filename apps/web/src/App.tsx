@@ -44,7 +44,7 @@ export default function App() {
   const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>("apps");
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
-  const [apiKey, setApiKey] = useState("");
+  const [editAgentApiKey, setEditAgentApiKey] = useState("");
   const [message, setMessage] = useState("Research RunwayML and produce a concise company profile.");
   const [sendState, setSendState] = useState<SendState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -87,10 +87,11 @@ export default function App() {
 
   async function handleCreateAgent() {
     try {
-      const agent = await createAgent({});
+      const agent = await createAgent({ spec: defaultAgentSpec, apiKey: "sk-replace-me" });
       setAgents((prev) => [...prev, agent]);
       setActiveAgent(agent);
       setEditingSpec(agent.spec);
+      setEditAgentApiKey("");
       setActiveSession(null);
       setWorkspaceView("agent-config");
       setError(null);
@@ -103,10 +104,14 @@ export default function App() {
     if (!activeAgent) return;
     setSaveState("saving");
     try {
-      const updated = await updateAgent(activeAgent.id, { spec: editingSpec });
+      const updated = await updateAgent(activeAgent.id, {
+        spec: editingSpec,
+        ...(editAgentApiKey.trim() ? { apiKey: editAgentApiKey.trim() } : {})
+      });
       setAgents((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
       setActiveAgent(updated);
       setEditingSpec(updated.spec);
+      setEditAgentApiKey("");
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 2000);
     } catch {
@@ -162,10 +167,6 @@ export default function App() {
   async function handleSendMessage() {
     const trimmed = message.trim();
     if (!trimmed) return;
-    if (!apiKey.trim()) {
-      setError("API key is required");
-      return;
-    }
     if (!activeSession) return;
 
     setSendState("sending");
@@ -174,7 +175,6 @@ export default function App() {
     try {
       const detail = await sendChatMessage({
         chatSessionId: activeSession.id,
-        apiKey: apiKey.trim(),
         message: trimmed
       });
       setActiveSession(detail);
@@ -291,6 +291,9 @@ export default function App() {
           <div className="agent-config-view">
             <header className="topbar">
               <h1>{activeAgent.name}</h1>
+              <span className={activeAgent.hasApiKey ? "status-ok" : "status-warning"}>
+                {activeAgent.hasApiKey ? "API Key: Configured" : "API Key: Not Set"}
+              </span>
               <button
                 className="button ghost compact export-btn"
                 type="button"
@@ -372,6 +375,16 @@ export default function App() {
                       onChange={(event) =>
                         setEditingSpec({ ...editingSpec, systemPrompt: event.target.value })
                       }
+                    />
+                  </label>
+                  <label>
+                    API Key
+                    <input
+                      type="password"
+                      aria-label="Agent API Key"
+                      value={editAgentApiKey}
+                      onChange={(event) => setEditAgentApiKey(event.target.value)}
+                      placeholder={activeAgent.hasApiKey ? "Configured — leave blank to keep" : "sk-…"}
                     />
                   </label>
                 </div>
@@ -537,16 +550,6 @@ export default function App() {
             </div>
 
             <div className="message-input-area">
-              <label>
-                API Key
-                <input
-                  type="password"
-                  aria-label="API Key"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder="sk-…"
-                />
-              </label>
               <textarea
                 rows={5}
                 aria-label="Message"

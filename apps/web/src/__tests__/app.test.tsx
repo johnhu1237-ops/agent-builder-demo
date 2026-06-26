@@ -18,6 +18,7 @@ function agentFixture(overrides: Record<string, unknown> = {}) {
     name: "Research Agent",
     description: "Researches companies",
     spec: defaultAgentSpec,
+    hasApiKey: true,
     createdAt: ts,
     updatedAt: ts,
     ...overrides
@@ -190,7 +191,7 @@ describe("multi-agent UI", () => {
     });
   });
 
-  it("sends a message without agentSpec in the request body", async () => {
+  it("sends a message with no API Key field in the chat panel", async () => {
     render(<App />);
     const user = userEvent.setup();
 
@@ -203,7 +204,7 @@ describe("multi-agent UI", () => {
     await user.clear(textarea);
     await user.type(textarea, "Hello");
 
-    await user.type(screen.getByLabelText("API Key"), "sk-test");
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
 
     const sendBtn = screen.getByRole("button", { name: /^Send$/ });
     await user.click(sendBtn);
@@ -215,9 +216,16 @@ describe("multi-agent UI", () => {
       );
       expect(messageCall).toBeTruthy();
       const body = JSON.parse(messageCall![1]!.body as string);
-      expect(body.agentSpec).toBeUndefined();
-      expect(body.runtimeSecrets.apiKey).toBe("sk-test");
+      expect(body).toEqual({ message: "Hello" });
     });
+  });
+
+  it("shows an API Key field in the agent config panel", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    await waitFor(() => expect(screen.getByLabelText("Agent API Key")).toBeInTheDocument());
   });
 
   it("switches between agent config and chat views", async () => {
