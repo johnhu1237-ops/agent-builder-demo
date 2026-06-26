@@ -22,6 +22,7 @@ describe("api client", () => {
             name: "Research Agent",
             description: "Test agent",
             spec: { version: "0.1", identity: { name: "Research Agent", description: "Test agent" } },
+            hasApiKey: true,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           }, 201);
@@ -32,6 +33,7 @@ describe("api client", () => {
             name: "Updated",
             description: "Updated desc",
             spec: { version: "0.1", identity: { name: "Updated", description: "Updated desc" } },
+            hasApiKey: true,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });
@@ -42,6 +44,7 @@ describe("api client", () => {
             name: "Research Agent",
             description: "Test agent",
             spec: { version: "0.1", identity: { name: "Research Agent", description: "Test agent" } },
+            hasApiKey: true,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });
@@ -79,10 +82,10 @@ describe("api client", () => {
   });
 
   describe("agent CRUD", () => {
-    it("creates an agent with a default spec", async () => {
-      const agent = await createAgent({});
+    it("creates an agent with a spec and api key", async () => {
+      const agent = await createAgent({ apiKey: "sk-test" });
+      expect(lastFetchBody).toEqual({ apiKey: "sk-test" });
       expect(agent.id).toBe("agent_1");
-      expect(agent.name).toBe("Research Agent");
     });
 
     it("lists agents", async () => {
@@ -116,13 +119,10 @@ describe("api client", () => {
       expect(session.title).toBe("Test chat");
     });
 
-    it("sends a message without agentSpec in the body", async () => {
-      await sendChatMessage({ chatSessionId: "chat_1", apiKey: "sk-test", message: "Hello" });
-      expect(lastFetchBody).toEqual({
-        message: "Hello",
-        runtimeSecrets: { apiKey: "sk-test" }
-      });
-      // agentSpec should NOT be in the body
+    it("sends a message with only the message in the body", async () => {
+      await sendChatMessage({ chatSessionId: "chat_1", message: "Hello" });
+      expect(lastFetchBody).toEqual({ message: "Hello" });
+      expect((lastFetchBody as Record<string, unknown>).runtimeSecrets).toBeUndefined();
       expect((lastFetchBody as Record<string, unknown>).agentSpec).toBeUndefined();
     });
   });
