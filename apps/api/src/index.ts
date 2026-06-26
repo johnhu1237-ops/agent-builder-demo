@@ -15,6 +15,7 @@ import { runChatMigrations } from "./chat-migrations";
 import { PgChatStore } from "./chat-store";
 import { redactSecrets } from "./redaction";
 import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
+import { decryptApiKey, validateEncryptionKey } from "./encryption";
 
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
@@ -24,6 +25,11 @@ function publicAgentSpec(spec: AgentSpec): AgentSpec {
   const exported = exportAgentSpec(spec);
   const { apiKey: _apiKey, apiKeyRef: _apiKeyRef, ...model } = exported.model;
   return { ...exported, model };
+}
+
+function publicAgent(agent: { encryptedApiKey?: string | null; spec: AgentSpec; [key: string]: unknown }) {
+  const { encryptedApiKey: _encryptedApiKey, spec, ...rest } = agent;
+  return { ...rest, spec: publicAgentSpec(spec) };
 }
 
 function stableError(message: string) {
@@ -71,12 +77,12 @@ export function createApiApp(deps: ApiDependencies = {}) {
   // Agent CRUD
 
   app.post("/api/agents", async (req, res) => {
-    const rawSpec = req.body.spec;
-    const apiKey = req.body.apiKey;
-    if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
-      res.status(400).json(stableError("apiKey is required"));
+    const apiKey = String(req.body.apiKey ?? "").trim();
+    if (!apiKey) {
+      res.status(400).json(stableError("API key is required"));
       return;
     }
+    const rawSpec = req.body.spec;
     let input: CreateAgentRequest;
     if (rawSpec === undefined) {
       input = { apiKey };
@@ -89,12 +95,12 @@ export function createApiApp(deps: ApiDependencies = {}) {
       input = { spec: validation.data, apiKey };
     }
     const agent = await chatStore.createAgent(input);
-    res.status(201).json({ ...agent, spec: publicAgentSpec(agent.spec) });
+    res.status(201).json(publicAgent(agent));
   });
 
   app.get("/api/agents", async (_req, res) => {
     const agents = await chatStore.listAgents();
-    res.json(agents.map((a) => ({ ...a, spec: publicAgentSpec(a.spec) })));
+    res.json(agents.map((a) => publicAgent(a)));
   });
 
   app.get("/api/agents/:id", async (req, res) => {
@@ -103,7 +109,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
       res.status(404).json(stableError("Agent not found"));
       return;
     }
-    res.json({ ...agent, spec: publicAgentSpec(agent.spec) });
+    res.json(publicAgent(agent));
   });
 
   app.put("/api/agents/:id", async (req, res) => {
@@ -112,13 +118,13 @@ export function createApiApp(deps: ApiDependencies = {}) {
       res.status(400).json(stableError(validation.error.message));
       return;
     }
-    const input: UpdateAgentRequest = { spec: validation.data };
-    if (req.body.apiKey && typeof req.body.apiKey === "string") {
-      input.apiKey = req.body.apiKey;
-    }
+    const apiKey = String(req.body.apiKey ?? "").trim();
+    const input: UpdateAgentRequest = apiKey
+      ? { spec: validation.data, apiKey }
+      : { spec: validation.data };
     try {
       const agent = await chatStore.updateAgent(req.params.id, input);
-      res.json({ ...agent, spec: publicAgentSpec(agent.spec) });
+      res.json(publicAgent(agent));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Update failed";
       res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
@@ -169,7 +175,28 @@ export function createApiApp(deps: ApiDependencies = {}) {
       return;
     }
 
-    const apiKey = String(req.body.runtimeSecrets?.apiKey ?? "").trim();
+    if (!agent.encryptedApiKey) {
+      res
+        .status(400)
+        .json(stableError("Agent API key not configured. Please update the agent settings."));
+      return;
+    }
+
+    const message = String(req.body.message ?? "").trim();
+    if (!message) {
+      res.status(400).json(stableError("Message is required"));
+      return;
+    }
+
+    let apiKey: string;
+    try {
+      apiKey = decryptApiKey(agent.encryptedApiKey);
+    } catch (error) {
+      console.error(`Decryption failed for agent ${agent.id}:`, error);
+      res.status(500).json(stableError("Failed to decrypt API key for agent"));
+      return;
+    }
+
     const agentSpec: AgentSpec = {
       ...agent.spec,
       model: {
@@ -181,16 +208,6 @@ export function createApiApp(deps: ApiDependencies = {}) {
     const validation = validateAgentSpec(agentSpec);
     if (!validation.success) {
       res.status(400).json(stableError(validation.error.message));
-      return;
-    }
-
-    const message = String(req.body.message ?? "").trim();
-    if (!message) {
-      res.status(400).json(stableError("Message is required"));
-      return;
-    }
-    if (!apiKey) {
-      res.status(400).json(stableError("API key is required"));
       return;
     }
 
@@ -309,6 +326,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
 }
 
 async function createProductionApiApp() {
+  validateEncryptionKey();
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required for v0.1.1 chat persistence");

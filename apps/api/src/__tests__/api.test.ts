@@ -92,8 +92,7 @@ describe("API orchestrator", () => {
     const messageResponse = await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        message: "Use sk-test to inspect Acme.",
-        runtimeSecrets: { apiKey: "sk-test" }
+        message: "Use sk-test to inspect Acme."
       })
       .expect(201);
 
@@ -166,16 +165,14 @@ describe("API orchestrator", () => {
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        message: "First turn",
-        runtimeSecrets: { apiKey: "sk-test" }
+        message: "First turn"
       })
       .expect(201);
 
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        message: "Second turn",
-        runtimeSecrets: { apiKey: "sk-test" }
+        message: "Second turn"
       })
       .expect(201);
 
@@ -190,9 +187,10 @@ describe("API orchestrator", () => {
     );
   });
 
-  it("rejects message creation without a runtime API key", async () => {
+  it("rejects message creation when the agent has no api key configured", async () => {
     const app = createApiApp({ chatStore: store });
     const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    await pool.query(`update agents set encrypted_api_key = null where id = $1`, [agent.id]);
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
       .send({ agentId: agent.id, title: "No key session" })
@@ -200,13 +198,54 @@ describe("API orchestrator", () => {
 
     const response = await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
-      .send({
-        message: "Tell me about Acme.",
-        runtimeSecrets: { apiKey: "" }
-      })
+      .send({ message: "Tell me about Acme." })
       .expect(400);
 
-    expect(response.body.error).toBe("API key is required");
+    expect(response.body.error).toBe(
+      "Agent API key not configured. Please update the agent settings."
+    );
+  });
+
+  it("decrypts the stored key just-in-time and passes it to the runner", async () => {
+    const runAgentTask = vi.fn().mockResolvedValue({
+      status: "completed",
+      finalMarkdown: "Done",
+      rawOutputRedacted: "",
+      sessionId: null,
+      workDir: null,
+      taskMessages: []
+    } satisfies RunnerAgentTaskResponse);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-stored" });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "Decrypt JIT" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Hello" })
+      .expect(201);
+
+    expect(runAgentTask.mock.calls[0]![0].runtimeSecrets).toEqual({ apiKey: "sk-stored" });
+    expect(runAgentTask.mock.calls[0]![0].agentSpec.model.apiKey).toBe("sk-stored");
+  });
+
+  it("returns 500 with a clear message when decryption fails", async () => {
+    const app = createApiApp({ chatStore: store });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    await pool.query(`update agents set encrypted_api_key = 'corrupted' where id = $1`, [agent.id]);
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "Corrupt key" })
+      .expect(201);
+
+    const response = await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Hello" })
+      .expect(500);
+
+    expect(response.body.error).toBe("Failed to decrypt API key for agent");
   });
 
   it("passes task id and runner event target to the runner", async () => {
@@ -232,8 +271,7 @@ describe("API orchestrator", () => {
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
       .send({
-        message: "Run with events.",
-        runtimeSecrets: { apiKey: "sk-test" }
+        message: "Run with events."
       })
       .expect(201);
 
@@ -294,6 +332,23 @@ describe("API orchestrator", () => {
   });
 
   describe("agent CRUD endpoints", () => {
+    it("rejects creating an agent without an api key", async () => {
+      const app = createApiApp({ chatStore: store });
+      const res = await request(app).post("/api/agents").send({ spec: defaultAgentSpec }).expect(400);
+      expect(res.body.error).toBe("API key is required");
+    });
+
+    it("returns hasApiKey true and never leaks key material", async () => {
+      const app = createApiApp({ chatStore: store });
+      const res = await request(app)
+        .post("/api/agents")
+        .send({ spec: defaultAgentSpec, apiKey: "sk-secret" })
+        .expect(201);
+      expect(res.body.hasApiKey).toBe(true);
+      expect(res.body.encryptedApiKey).toBeUndefined();
+      expect(JSON.stringify(res.body)).not.toContain("sk-secret");
+    });
+
     it("creates an agent via POST /api/agents", async () => {
       const app = createApiApp({ chatStore: store });
 
@@ -448,7 +503,7 @@ describe("API orchestrator", () => {
 
       const res = await request(app)
         .post(`/api/chat-sessions/${session.body.id}/messages`)
-        .send({ message: "Hello", runtimeSecrets: { apiKey: "sk-test" } })
+        .send({ message: "Hello" })
         .expect(201);
 
       expect(res.body).toBeTruthy();
@@ -487,7 +542,7 @@ describe("API orchestrator", () => {
 
       await request(app)
         .post(`/api/chat-sessions/${session.body.id}/messages`)
-        .send({ message: "Hi", runtimeSecrets: { apiKey: "sk-test" } })
+        .send({ message: "Hi" })
         .expect(201);
 
       const calledAgentSpec = runAgentTask.mock.calls[0]![0].agentSpec;
