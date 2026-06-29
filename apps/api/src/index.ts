@@ -16,7 +16,7 @@ import {
   type TaskTerminalEvent,
   type UpdateAgentRequest
 } from "@agent-builder/shared";
-import { getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
+import { agentTaskMcpGatewayEndpoint, getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
 import { runChatMigrations } from "./chat-migrations";
 import { PgChatStore } from "./chat-store";
 import { redactSecrets } from "./redaction";
@@ -41,6 +41,68 @@ function publicAgent(agent: { encryptedApiKey?: string | null; spec: AgentSpec; 
 
 function stableError(message: string) {
   return { error: message };
+}
+
+function bearerToken(req: express.Request): string | null {
+  const header = req.header("authorization") ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match?.[1]?.trim() || null;
+}
+
+function jsonRpcResult(id: unknown, result: unknown) {
+  return { jsonrpc: "2.0", id: id ?? null, result };
+}
+
+function jsonRpcError(id: unknown, code: number, message: string) {
+  return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+}
+
+function toolsForAgentSpec(agentSpec: AgentSpec) {
+  const enabledApps = new Set(agentSpec.apps.filter((app) => app.enabled).map((app) => app.id));
+  const tools = [];
+  if (enabledApps.has("mock-github")) {
+    tools.push({
+      name: "github_create_issue",
+      description: "Create a GitHub issue through the product MCP gateway.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          body: { type: "string" }
+        },
+        required: ["title"]
+      }
+    });
+  }
+  if (enabledApps.has("mock-slack")) {
+    tools.push({
+      name: "slack_post_message",
+      description: "Post a Slack message through the product MCP gateway.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          channel: { type: "string" },
+          text: { type: "string" }
+        },
+        required: ["channel", "text"]
+      }
+    });
+  }
+  if (enabledApps.has("mock-notion")) {
+    tools.push({
+      name: "notion_create_page",
+      description: "Create a Notion page through the product MCP gateway.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          content: { type: "string" }
+        },
+        required: ["title"]
+      }
+    });
+  }
+  return tools;
 }
 
 function statusFromError(message: string): Exclude<AgentTaskStatus, "pending" | "running" | "completed" | "cancelled"> {
@@ -83,8 +145,12 @@ async function executeAgentTask(params: {
   message: string;
   apiKey: string;
   agentSpec: AgentSpec;
+  agentTaskLease: {
+    id: string;
+    token: string;
+  };
 }): Promise<void> {
-  const { chatStore, runnerClient, taskEvents, detail, task, message, apiKey, agentSpec } = params;
+  const { chatStore, runnerClient, taskEvents, detail, task, message, apiKey, agentSpec, agentTaskLease } = params;
   const publishTerminal = (finalTask: AgentTask) => {
     taskEvents.publish(detail.id, {
       type: "terminal",
@@ -99,6 +165,9 @@ async function executeAgentTask(params: {
     const result = await runnerClient.runAgentTask({
       chatSessionId: detail.id,
       taskId: task.id,
+      mcpGatewayUrl: agentTaskMcpGatewayEndpoint(),
+      agentTaskLeaseId: agentTaskLease.id,
+      agentTaskLeaseToken: agentTaskLease.token,
       message,
       agentSpec,
       runtimeSecrets: { apiKey },
@@ -124,6 +193,7 @@ async function executeAgentTask(params: {
           output: item.output ? redactSecrets(item.output, [apiKey]) : null
         }))
       });
+      await chatStore.revokeAgentTaskLeases(task.id);
       publishTerminal(finalTask);
     } else {
       const finalTask = await chatStore.failAgentTask(task.id, {
@@ -138,6 +208,7 @@ async function executeAgentTask(params: {
           output: item.output ? redactSecrets(item.output, [apiKey]) : null
         }))
       });
+      await chatStore.revokeAgentTaskLeases(task.id);
       publishTerminal(finalTask);
     }
   } catch (error) {
@@ -152,6 +223,7 @@ async function executeAgentTask(params: {
         { type: "error", tool: null, content: redactSecrets(messageText, [apiKey]), inputJson: null, output: null }
       ]
     });
+    await chatStore.revokeAgentTaskLeases(task.id);
     publishTerminal(finalTask);
   }
 }
@@ -362,6 +434,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
         triggerMessageId: userMessage.id,
         agentSpec: validation.data
       });
+      const agentTaskLease = await chatStore.issueAgentTaskLease(task.id);
 
       const runningTask = (await chatStore.markAgentTaskRunning(task.id)) ?? task;
 
@@ -373,7 +446,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
         task: runningTask,
         message,
         apiKey,
-        agentSpec: validation.data
+        agentSpec: validation.data,
+        agentTaskLease
       });
       const tracked = execution
         .catch((error) => {
@@ -449,6 +523,45 @@ export function createApiApp(deps: ApiDependencies = {}) {
     });
   });
 
+  app.post("/mcp/agent-task", async (req, res) => {
+    const token = bearerToken(req);
+    if (!token) {
+      res.status(401).json(stableError("Agent Task Lease bearer token is required"));
+      return;
+    }
+
+    const lease = await chatStore.validateAgentTaskLease(token);
+    if (!lease) {
+      res.status(401).json(stableError("Invalid or expired Agent Task Lease"));
+      return;
+    }
+
+    const id = req.body?.id ?? null;
+    const method = String(req.body?.method ?? "");
+    if (method === "initialize") {
+      res.json(
+        jsonRpcResult(id, {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "agent-builder", version: "0.1.0" }
+        })
+      );
+      return;
+    }
+
+    if (method === "tools/list") {
+      res.json(jsonRpcResult(id, { tools: toolsForAgentSpec(lease.agentSpec) }));
+      return;
+    }
+
+    if (method === "tools/call") {
+      res.json(jsonRpcError(id, -32601, "not_implemented"));
+      return;
+    }
+
+    res.status(400).json(jsonRpcError(id, -32601, "Method not found"));
+  });
+
   app.get("/api/agent-tasks/:id", async (_req, res) => {
     res.status(501).json(stableError("Use GET /api/chat-sessions/:id for v0.1.1 task details"));
   });
@@ -480,6 +593,30 @@ export function createApiApp(deps: ApiDependencies = {}) {
       const message = error instanceof Error ? error.message : "Failed to append runner task events";
       res.status(message.includes("terminal task") ? 409 : 404).json(stableError(message));
     }
+  });
+
+  app.post("/internal/agent-task-leases/:id/bind-sandbox", async (req, res) => {
+    if (!requireRunnerEventAuth(req)) {
+      res.status(401).json(stableError("Unauthorized runner event request"));
+      return;
+    }
+
+    const sandboxId = String(req.body?.sandboxId ?? "").trim();
+    if (!sandboxId) {
+      res.status(400).json(stableError("sandboxId is required"));
+      return;
+    }
+
+    const result = await chatStore.bindAgentTaskLeaseSandbox(req.params.id, sandboxId);
+    if (result === "bound") {
+      res.status(202).json({ ok: true });
+      return;
+    }
+    if (result === "conflict") {
+      res.status(409).json(stableError("Agent Task Lease is already bound to a different sandbox"));
+      return;
+    }
+    res.status(404).json(stableError("Agent Task Lease not found"));
   });
 
   return app;

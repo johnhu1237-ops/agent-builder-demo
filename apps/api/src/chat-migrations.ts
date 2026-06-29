@@ -110,6 +110,20 @@ async function createIndexIfNeeded(db: Queryable, indexName: string, sql: string
   }
 }
 
+async function createNonUniqueIndexIfNeeded(db: Queryable, indexName: string, sql: string): Promise<void> {
+  try {
+    await db.query(sql);
+  } catch (error) {
+    if (!isPgMemUnsupportedIfNotExists(error)) {
+      throw error;
+    }
+    if (await indexExists(db, indexName)) {
+      return;
+    }
+    await db.query(sql.replace("create index if not exists", "create index"));
+  }
+}
+
 function hasNonEmptyText(value: string | null): value is string {
   return value != null && value.trim().length > 0;
 }
@@ -615,8 +629,48 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
     "created_order",
     `
     alter table agent_tasks
-    add column if not exists created_order bigserial
-  `
+      add column if not exists created_order bigserial
+    `
+  );
+
+  await addColumnIfNeeded(
+    db,
+    "agent_tasks",
+    "tool_policy_snapshot",
+    `
+      alter table agent_tasks
+      add column if not exists tool_policy_snapshot jsonb
+    `
+  );
+
+  await createTableIfNeeded(
+    db,
+    "agent_task_leases",
+    `
+      create table if not exists agent_task_leases (
+        id text primary key,
+        agent_task_id text not null references agent_tasks(id) on delete cascade,
+        token_hash text not null unique,
+        issuer text not null,
+        audience text not null,
+        status text not null,
+        sandbox_id text,
+        expires_at timestamptz not null,
+        absolute_expires_at timestamptz not null,
+        revoked_at timestamptz,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `
+  );
+
+  await createNonUniqueIndexIfNeeded(
+    db,
+    "idx_agent_task_leases_agent_task_id",
+    `
+      create index if not exists idx_agent_task_leases_agent_task_id
+      on agent_task_leases(agent_task_id)
+    `
   );
 
   await addColumnIfNeeded(

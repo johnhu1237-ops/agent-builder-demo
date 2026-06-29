@@ -305,6 +305,63 @@ describe("e2b runner", () => {
     expect(emitted).toContain("paused");
   });
 
+  it("binds the lease and registers the product MCP gateway before Codex runs", async () => {
+    const order: string[] = [];
+    const sandbox = fakeSandbox("sandbox-1");
+    const runCalls: Array<{ command: string; opts: any }> = [];
+    sandbox.commands.run = async (command, opts) => {
+      order.push("codex");
+      runCalls.push({ command, opts });
+      await opts?.onStdout?.(JSON.stringify({ session_id: "codex-session-1" }) + "\n");
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+
+    await runE2BAgentTask(
+      {
+        chatSessionId: "chat-session-1",
+        taskId: "task-1",
+        mcpGatewayUrl: "https://api.example.com/mcp/agent-task",
+        agentTaskLeaseId: "lease-1",
+        agentTaskLeaseToken: "lease-token",
+        message: "Research Acme.",
+        agentSpec: defaultAgentSpec,
+        runtimeSecrets: { apiKey: "sk-test" },
+        sessionId: null,
+        workDir: null,
+        runnerEvents: {
+          endpoint: "https://api.example.com/internal/runner/task-events",
+          token: "runner-token"
+        }
+      },
+      {
+        timeoutMs: 120000,
+        templateId: "template-1",
+        factory: {
+          create: async () => sandbox,
+          connect: async () => {
+            throw new Error("connect should not run");
+          }
+        },
+        emitEvent: async () => undefined,
+        bindAgentTaskLeaseSandbox: async (input) => {
+          order.push(`bind:${input.leaseId}:${input.sandboxId}`);
+        }
+      }
+    );
+
+    expect(order).toEqual(["bind:lease-1:sandbox-1", "codex"]);
+    expect(runCalls[0].opts.envs).toEqual({
+      CODEX_API_KEY: "sk-test",
+      AGENT_BUILDER_MCP_GATEWAY_URL: "https://api.example.com/mcp/agent-task",
+      AGENT_BUILDER_AGENT_TASK_LEASE: "lease-token"
+    });
+    expect(runCalls[0].command).toContain("codex mcp remove agent-builder");
+    expect(runCalls[0].command).toContain("codex mcp add agent-builder");
+    expect(runCalls[0].command).toContain("--url \"$AGENT_BUILDER_MCP_GATEWAY_URL\"");
+    expect(runCalls[0].command).toContain("--bearer-token-env-var AGENT_BUILDER_AGENT_TASK_LEASE");
+    expect(runCalls[0].command).not.toContain("lease-token");
+  });
+
   it("resets session pointer when workspace loss creates a fresh sandbox", async () => {
     const sandbox = fakeSandbox("sandbox-fresh");
     sandbox.commands.run = async (_command, opts) => {
