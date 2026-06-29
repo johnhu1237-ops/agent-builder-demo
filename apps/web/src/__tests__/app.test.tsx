@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultAgentSpec } from "@agent-builder/shared";
@@ -344,7 +344,9 @@ describe("multi-agent UI", () => {
       expect(FakeEventSource.instances.length).toBeGreaterThan(0);
     });
     const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
-    source.emit("task_completed", { taskId: "task_1", status: "completed" });
+    act(() => {
+      source.emit("task_completed", { taskId: "task_1", status: "completed" });
+    });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -425,20 +427,22 @@ describe("multi-agent UI", () => {
 
     const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
 
-    source.emit("task_message", {
-      taskId: "task_1",
-      seq: 0,
-      taskMessage: {
-        id: "tm_live_1",
+    act(() => {
+      source.emit("task_message", {
         taskId: "task_1",
         seq: 0,
-        type: "status",
-        tool: null,
-        content: "Searching...",
-        inputJson: null,
-        output: null,
-        createdAt: new Date().toISOString()
-      }
+        taskMessage: {
+          id: "tm_live_1",
+          taskId: "task_1",
+          seq: 0,
+          type: "status",
+          tool: null,
+          content: "Searching...",
+          inputJson: null,
+          output: null,
+          createdAt: new Date().toISOString()
+        }
+      });
     });
 
     await waitFor(() => {
@@ -493,11 +497,61 @@ describe("multi-agent UI", () => {
       return jsonResponse(null, 404);
     });
 
-    source.emit("task_completed", { taskId: "task_1", status: "completed" });
+    act(() => {
+      source.emit("task_completed", { taskId: "task_1", status: "completed" });
+    });
 
     await waitFor(() => {
       expect(screen.getByText("Acme report complete.")).toBeInTheDocument();
     });
     expect(source.readyState).toBe(2);
+  });
+
+  it("deduplicates replayed activity events by task id and sequence", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Research Acme");
+    await user.click(screen.getByRole("button", { name: /^Send$/ }));
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+
+    const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+    const taskMessage = {
+      taskId: "task_1",
+      seq: 1,
+      type: "status",
+      tool: null,
+      content: "Replayed update",
+      inputJson: null,
+      output: null,
+      createdAt: new Date().toISOString()
+    };
+
+    act(() => {
+      source.emit("task_message", {
+        taskId: "task_1",
+        seq: 1,
+        taskMessage: { ...taskMessage, id: "tm_first" }
+      });
+      source.emit("task_message", {
+        taskId: "task_1",
+        seq: 1,
+        taskMessage: { ...taskMessage, id: "tm_replayed" }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Replayed update")).toHaveLength(1);
+    });
   });
 });

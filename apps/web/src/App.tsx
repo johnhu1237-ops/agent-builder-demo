@@ -33,6 +33,10 @@ type SendState = "idle" | "sending" | "failed";
 type ConfigTab = "profile" | "model" | "tools";
 type ToolsTab = "apps" | "skills" | "abilities";
 
+function taskMessageStreamKey(input: { taskId: string; seq: number }): string {
+  return `${input.taskId}:${input.seq}`;
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -215,7 +219,8 @@ export default function App() {
           const data = JSON.parse(rawEvent.data) as TaskMessageEvent;
           setActiveSession((prev) => {
             if (!prev || prev.id !== sessionId) return prev;
-            if (prev.taskMessages.some((m) => m.id === data.taskMessage.id)) return prev;
+            const incomingKey = taskMessageStreamKey({ taskId: data.taskId, seq: data.seq });
+            if (prev.taskMessages.some((m) => taskMessageStreamKey(m) === incomingKey)) return prev;
             return { ...prev, taskMessages: [...prev.taskMessages, data.taskMessage] };
           });
         } catch {
@@ -663,7 +668,7 @@ export default function App() {
                   {activeSession.latestTask.status === "running" ? " (running)" : ""}
                 </summary>
                 {activeSession.taskMessages.map((taskMessage) => (
-                  <div key={taskMessage.id} className="trace-item">
+                  <div key={taskMessageStreamKey(taskMessage)} className="trace-item">
                     <span className={`trace-type trace-${taskMessage.type}`}>{taskMessage.type}</span>
                     <span className="trace-content">{taskMessage.content.slice(0, 200)}</span>
                   </div>
