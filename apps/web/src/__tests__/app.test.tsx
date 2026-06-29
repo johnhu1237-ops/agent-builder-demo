@@ -448,6 +448,8 @@ describe("multi-agent UI", () => {
     await waitFor(() => {
       expect(screen.getByText("Searching...")).toBeInTheDocument();
     });
+    expect(screen.getByText("Activity · Running · 1 event")).toBeVisible();
+    expect(screen.getByText("Searching...")).toBeVisible();
 
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
       const method = options?.method ?? "GET";
@@ -505,6 +507,102 @@ describe("multi-agent UI", () => {
       expect(screen.getByText("Acme report complete.")).toBeInTheDocument();
     });
     expect(source.readyState).toBe(2);
+  });
+
+  it("collapses completed Activity to a summary and lets users expand it", async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (url.endsWith("/api/agents") && method === "GET") {
+        return jsonResponse([agentFixture()]);
+      }
+      if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(agentFixture());
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([sessionFixture({ title: "Completed chat" })]);
+      }
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(
+          sessionDetailFixture({
+            title: "Completed chat",
+            messages: [
+              {
+                id: "msg_1",
+                chatSessionId: "chat_1",
+                role: "user",
+                contentMarkdown: "Research Acme",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              },
+              {
+                id: "msg_2",
+                chatSessionId: "chat_1",
+                role: "assistant",
+                contentMarkdown: "Acme report complete.",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              }
+            ],
+            latestTask: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "completed",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: "Acme report complete.",
+              rawOutputRedacted: "",
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString()
+            },
+            taskMessages: [
+              {
+                id: "tm_1",
+                taskId: "task_1",
+                seq: 0,
+                type: "status",
+                tool: null,
+                content: "Started research",
+                inputJson: null,
+                output: null,
+                createdAt: new Date().toISOString()
+              },
+              {
+                id: "tm_2",
+                taskId: "task_1",
+                seq: 1,
+                type: "tool_result",
+                tool: "search",
+                content: "Found source",
+                inputJson: null,
+                output: null,
+                createdAt: new Date().toISOString()
+              }
+            ]
+          })
+        );
+      }
+      return jsonResponse(null, 404);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    await user.click(await screen.findByRole("button", { name: /Completed chat/ }));
+
+    const activitySummary = await screen.findByText("Activity · Completed · 2 events");
+    expect(activitySummary).toBeVisible();
+    expect(screen.getByText("Started research")).not.toBeVisible();
+
+    await user.click(activitySummary);
+
+    expect(screen.getByText("Started research")).toBeVisible();
+    expect(screen.getByText("Found source")).toBeVisible();
   });
 
   it("deduplicates replayed activity events by task id and sequence", async () => {
