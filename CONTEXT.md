@@ -5,6 +5,10 @@ start chat sessions, and observe agent work as part of the conversation.
 
 ## Language
 
+**Agent**:
+A configurable code-working persona that a user edits and tests through **Chat Sessions**. Future **Agent Tasks** use the Agent's current configuration, while past tasks keep their own task-time record.
+_Avoid_: Bot, assistant template.
+
 **Chat Session**:
 A conversation between a user and one configured **Agent**. A chat session owns zero
 or more user messages, assistant messages, and agent tasks, but only one **Agent
@@ -27,6 +31,22 @@ _Avoid_: Thinking, reasoning, chain of thought.
 The chat UI presentation of a **Task Event Stream**. Activity appears inline with
 the chat while an **Agent Task** is running and may be collapsed after completion.
 _Avoid_: Thought process, model reasoning.
+
+**Tool Configuration**:
+The set of external app tools that an **Agent** may use, including whether each tool is available automatically, requires confirmation, or is unavailable. Tool configuration changes affect future **Agent Tasks**, not tasks already running or completed.
+_Avoid_: Plugin settings, connector permissions.
+
+**Connected Account**:
+A user's authorized connection to an external app account that may be granted to one or more **Agents**. A connected account is distinct from an Agent's **Tool Configuration**, which decides whether and how that Agent can use the account's tools.
+_Avoid_: Agent credential, tool permission.
+
+**Agent Task Lease**:
+A short-lived authorization lease that lets the runtime for one **Agent Task** reach product-controlled execution services such as the MCP permission gateway. The lease belongs to the Agent Task, not to the long-lived **Chat Session**.
+_Avoid_: Session token, sandbox credential.
+
+**Tool Confirmation**:
+A user decision for one exact external tool call requested during an **Agent Task**. A tool confirmation approves, denies, or expires the original call; it does not grant broader access to the tool.
+_Avoid_: Permission grant, tool unlock.
 
 ## Example Dialogue
 
