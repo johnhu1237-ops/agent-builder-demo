@@ -117,6 +117,33 @@ beforeEach(() => {
     if (/\/api\/agents\/[^/]+$/.test(url) && method === "PUT") {
       return jsonResponse(agentFixture({ name: "Updated", description: "Updated desc" }));
     }
+    if (/\/api\/agents\/[^/]+\/tool-configurations\/[^/]+$/.test(url) && method === "PATCH") {
+      const body = options?.body ? JSON.parse(options.body as string) : {};
+      return jsonResponse({
+        id: "tool_config_1",
+        agentId: "agent_1",
+        connectedAccountId: "connected_account_1",
+        appId: "mock-github",
+        toolName: "github_create_issue",
+        mode: body.mode ?? "disabled",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+    if (/\/api\/agents\/[^/]+\/tool-configurations$/.test(url) && method === "GET") {
+      return jsonResponse([
+        {
+          id: "tool_config_1",
+          agentId: "agent_1",
+          connectedAccountId: "connected_account_1",
+          appId: "mock-github",
+          toolName: "github_create_issue",
+          mode: "ask_each_time",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ]);
+    }
     if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
       return jsonResponse(agentFixture());
     }
@@ -262,6 +289,33 @@ describe("multi-agent UI", () => {
     await user.click(screen.getByRole("tab", { name: "Model" }));
 
     await waitFor(() => expect(screen.getByLabelText("Agent API Key")).toBeInTheDocument());
+  });
+
+  it("shows and updates persisted Tool Configuration modes", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    await user.click(await screen.findByRole("tab", { name: "Tools" }));
+
+    const modeSelect = await screen.findByLabelText("GitHub github_create_issue mode");
+    expect(modeSelect).toHaveValue("ask_each_time");
+
+    await user.selectOptions(modeSelect, "disabled");
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
+      const patchCall = calls.find(
+        (c) =>
+          typeof c[0] === "string" &&
+          c[0].includes("/tool-configurations/tool_config_1") &&
+          c[1]?.method === "PATCH"
+      );
+      expect(patchCall).toBeTruthy();
+      expect(JSON.parse(patchCall![1]!.body as string)).toEqual({ mode: "disabled" });
+    });
+    expect(modeSelect).toHaveValue("disabled");
   });
 
   it("switches between agent config and chat views", async () => {

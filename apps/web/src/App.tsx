@@ -23,11 +23,15 @@ import {
   createAgent,
   getAgent,
   updateAgent,
+  listToolConfigurations,
+  updateToolConfigurationMode,
   listChatSessions,
   createChatSession,
   getChatSession,
   sendChatMessage,
-  createTaskEventSource
+  createTaskEventSource,
+  type ToolConfiguration,
+  type ToolConfigurationMode
 } from "./api";
 
 type WorkspaceView = "empty" | "agent-config" | "chat";
@@ -79,6 +83,17 @@ function activitySummary(task: AgentTask, eventCount: number): string {
   return `Activity · ${activityStatusLabel(task.status)} · ${eventCount} ${eventLabel}`;
 }
 
+function toolConfigurationModeLabel(mode: ToolConfigurationMode): string {
+  switch (mode) {
+    case "auto":
+      return "Auto";
+    case "ask_each_time":
+      return "Ask each time";
+    case "disabled":
+      return "Disabled";
+  }
+}
+
 function ActivityBlock({ task, taskMessages }: { task: AgentTask; taskMessages: TaskMessage[] }) {
   const isRunning = !isTerminalTaskStatus(task.status);
   const [isOpen, setIsOpen] = useState(isRunning);
@@ -119,6 +134,7 @@ export default function App() {
   const [chatsOpen, setChatsOpen] = useState(true);
 
   const [editingSpec, setEditingSpec] = useState<AgentSpec>(defaultAgentSpec);
+  const [toolConfigurations, setToolConfigurations] = useState<ToolConfiguration[]>([]);
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("profile");
   const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>("apps");
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -206,8 +222,10 @@ export default function App() {
   async function selectAgent(agentId: string) {
     try {
       const agent = await getAgent(agentId);
+      const nextToolConfigurations = await listToolConfigurations(agentId).catch(() => []);
       setActiveAgent(agent);
       setEditingSpec(agent.spec);
+      setToolConfigurations(nextToolConfigurations);
       setActiveSession(null);
       setWorkspaceView("agent-config");
       setError(null);
@@ -222,6 +240,7 @@ export default function App() {
       setAgents((prev) => [...prev, agent]);
       setActiveAgent(agent);
       setEditingSpec(agent.spec);
+      setToolConfigurations([]);
       setEditAgentApiKey("");
       setActiveSession(null);
       setWorkspaceView("agent-config");
@@ -247,6 +266,31 @@ export default function App() {
       setTimeout(() => setSaveState("idle"), 2000);
     } catch {
       setSaveState("failed");
+    }
+  }
+
+  async function handleToolConfigurationModeChange(
+    toolConfigurationId: string,
+    mode: ToolConfigurationMode
+  ) {
+    if (!activeAgent) return;
+    const previous = toolConfigurations;
+    setToolConfigurations((current) =>
+      current.map((toolConfiguration) =>
+        toolConfiguration.id === toolConfigurationId ? { ...toolConfiguration, mode } : toolConfiguration
+      )
+    );
+    try {
+      const updated = await updateToolConfigurationMode(activeAgent.id, toolConfigurationId, mode);
+      setToolConfigurations((current) =>
+        current.map((toolConfiguration) =>
+          toolConfiguration.id === updated.id ? updated : toolConfiguration
+        )
+      );
+      setError(null);
+    } catch {
+      setToolConfigurations(previous);
+      setError("Failed to update Tool Configuration");
     }
   }
 
@@ -683,29 +727,60 @@ export default function App() {
 
                   {activeToolsTab === "apps" ? (
                     <div className="toggle-list">
-                      {editingSpec.apps.map((app) => {
-                        const item = appRegistry.find((registryEntry) => registryEntry.id === app.id);
-                        return (
-                          <label key={app.id} className="toggle-row">
-                            <span>{item?.label ?? app.id}</span>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={app.enabled}
-                              onClick={() =>
-                                setEditingSpec({
-                                  ...editingSpec,
-                                  apps: editingSpec.apps.map((entry) =>
-                                    entry.id === app.id ? { ...entry, enabled: !entry.enabled } : entry
+                      {toolConfigurations.length > 0 ? (
+                        toolConfigurations.map((toolConfiguration) => {
+                          const item = appRegistry.find((registryEntry) => registryEntry.id === toolConfiguration.appId);
+                          const appLabel = item?.label ?? toolConfiguration.appId;
+                          return (
+                            <label key={toolConfiguration.id} className="toggle-row">
+                              <span>
+                                {appLabel}
+                                <small>{toolConfiguration.toolName}</small>
+                              </span>
+                              <select
+                                aria-label={`${appLabel} ${toolConfiguration.toolName} mode`}
+                                value={toolConfiguration.mode}
+                                onChange={(event) =>
+                                  handleToolConfigurationModeChange(
+                                    toolConfiguration.id,
+                                    event.target.value as ToolConfigurationMode
                                   )
-                                })
-                              }
-                            >
-                              {app.enabled ? "ON" : "OFF"}
-                            </button>
-                          </label>
-                        );
-                      })}
+                                }
+                              >
+                                {(["auto", "ask_each_time", "disabled"] as const).map((mode) => (
+                                  <option key={mode} value={mode}>
+                                    {toolConfigurationModeLabel(mode)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          );
+                        })
+                      ) : (
+                        editingSpec.apps.map((app) => {
+                          const item = appRegistry.find((registryEntry) => registryEntry.id === app.id);
+                          return (
+                            <label key={app.id} className="toggle-row">
+                              <span>{item?.label ?? app.id}</span>
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={app.enabled}
+                                onClick={() =>
+                                  setEditingSpec({
+                                    ...editingSpec,
+                                    apps: editingSpec.apps.map((entry) =>
+                                      entry.id === app.id ? { ...entry, enabled: !entry.enabled } : entry
+                                    )
+                                  })
+                                }
+                              >
+                                {app.enabled ? "ON" : "OFF"}
+                              </button>
+                            </label>
+                          );
+                        })
+                      )}
                     </div>
                   ) : null}
 

@@ -819,6 +819,16 @@ textarea:focus {
   border-color: #030303;
 }
 
+.toggle-list select {
+  min-width: 150px;
+  border: 1px solid #c9ccd1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1f2329;
+  font: inherit;
+  padding: 7px 10px;
+}
+
 .ability-pills {
   display: flex;
   flex-wrap: wrap;

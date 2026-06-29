@@ -2,6 +2,19 @@ import type { Agent, ChatSession, ChatSessionDetail, ScheduleChatMessageResponse
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4001";
 
+export type ToolConfigurationMode = "auto" | "ask_each_time" | "disabled";
+
+export type ToolConfiguration = {
+  id: string;
+  agentId: string;
+  connectedAccountId: string;
+  appId: string;
+  toolName: string;
+  mode: ToolConfigurationMode;
+  createdAt: string;
+  updatedAt: string;
+};
+
 async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...options,
@@ -39,6 +52,24 @@ export async function updateAgent(id: string, input: { spec: unknown; apiKey?: s
     method: "PUT",
     body: JSON.stringify(input)
   });
+}
+
+export async function listToolConfigurations(agentId: string): Promise<ToolConfiguration[]> {
+  return requestJson<ToolConfiguration[]>(`/api/agents/${encodeURIComponent(agentId)}/tool-configurations`);
+}
+
+export async function updateToolConfigurationMode(
+  agentId: string,
+  toolConfigurationId: string,
+  mode: ToolConfigurationMode
+): Promise<ToolConfiguration> {
+  return requestJson<ToolConfiguration>(
+    `/api/agents/${encodeURIComponent(agentId)}/tool-configurations/${encodeURIComponent(toolConfigurationId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ mode })
+    }
+  );
 }
 
 // Default agent (kept for backward compat)

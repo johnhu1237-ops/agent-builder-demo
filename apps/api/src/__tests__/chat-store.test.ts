@@ -1364,4 +1364,61 @@ describe("PgChatStore", () => {
       expect(session!.lastMessagePreview).toBeNull();
     });
   });
+
+  describe("Connected Account and Tool Configuration", () => {
+    it("creates Connected Account state outside AgentSpec and exposes default Tool Configuration for an Agent", async () => {
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+
+      const connectedAccount = await store.createConnectedAccount({
+        workspaceId: "workspace_demo",
+        appId: "mock-github",
+        accountLabel: "Mock GitHub",
+        externalAccountId: "github-user-1",
+        agentIds: [agent.id]
+      });
+
+      const toolConfigurations = await store.listToolConfigurationsForAgent(agent.id);
+
+      expect(connectedAccount.appId).toBe("mock-github");
+      expect(toolConfigurations).toEqual([
+        expect.objectContaining({
+          agentId: agent.id,
+          connectedAccountId: connectedAccount.id,
+          appId: "mock-github",
+          toolName: "github_create_issue",
+          mode: "ask_each_time"
+        })
+      ]);
+      expect(JSON.stringify((await store.getAgent(agent.id))?.spec)).not.toContain("connectedAccount");
+      expect(JSON.stringify((await store.getAgent(agent.id))?.spec)).not.toContain("ask_each_time");
+    });
+
+    it("updates Tool Configuration mode for an Agent", async () => {
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+      await store.createConnectedAccount({
+        workspaceId: "workspace_demo",
+        appId: "mock-github",
+        accountLabel: "Mock GitHub",
+        externalAccountId: "github-user-1",
+        agentIds: [agent.id]
+      });
+      const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+
+      const updated = await store.updateToolConfigurationMode({
+        agentId: agent.id,
+        toolConfigurationId: toolConfiguration.id,
+        mode: "auto"
+      });
+
+      expect(updated.mode).toBe("auto");
+      await expect(
+        store.updateToolConfigurationMode({
+          agentId: agent.id,
+          toolConfigurationId: toolConfiguration.id,
+          mode: "disabled"
+        })
+      ).resolves.toMatchObject({ mode: "disabled" });
+      expect((await store.listToolConfigurationsForAgent(agent.id))[0].mode).toBe("disabled");
+    });
+  });
 });
