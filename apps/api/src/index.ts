@@ -55,6 +55,15 @@ function sendSse(res: express.Response, event: string, data: unknown, id?: strin
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function lastEventSeq(req: express.Request): number | null {
+  const raw = req.header("last-event-id");
+  if (!raw) {
+    return null;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 async function executeAgentTask(params: {
   chatStore: PgChatStore;
   runnerClient: RunnerClient;
@@ -389,10 +398,16 @@ export function createApiApp(deps: ApiDependencies = {}) {
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders?.();
 
-    const snapshot: TaskSnapshotEvent = { task: detail.latestTask, taskMessages: detail.taskMessages };
+    const lastSeenSeq = lastEventSeq(req);
+    const replayTaskMessages =
+      lastSeenSeq == null
+        ? detail.taskMessages
+        : detail.taskMessages.filter((message) => message.seq > lastSeenSeq);
+
+    const snapshot: TaskSnapshotEvent = { task: detail.latestTask, taskMessages: replayTaskMessages };
     sendSse(res, "task_snapshot", snapshot);
 
-    for (const msg of detail.taskMessages) {
+    for (const msg of replayTaskMessages) {
       const event: TaskMessageEvent = { taskId: msg.taskId, seq: msg.seq, taskMessage: msg };
       sendSse(res, "task_message", event, String(msg.seq));
     }

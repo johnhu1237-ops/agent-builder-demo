@@ -512,6 +512,56 @@ describe("API orchestrator", () => {
 
       expect(events.some((e) => e.event === "task_completed")).toBe(true);
     });
+
+    it("replays only persisted task messages after Last-Event-ID on reconnect", async () => {
+      process.env.RUNNER_EVENT_TOKEN = "runner-token";
+      const deferred = createDeferred<RunnerAgentTaskResponse>();
+      const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const sessionId = await scheduledSession(app, runAgentTask);
+
+      const scheduled = await request(app)
+        .post(`/api/chat-sessions/${sessionId}/messages`)
+        .send({ message: "Go" })
+        .expect(202);
+      const taskId = scheduled.body.task.id as string;
+
+      await request(app)
+        .post("/internal/runner/task-events")
+        .set("authorization", "Bearer runner-token")
+        .send({
+          taskId,
+          messages: [
+            { type: "status", tool: null, content: "First", inputJson: null, output: null },
+            { type: "status", tool: null, content: "Second", inputJson: null, output: null },
+            { type: "status", tool: null, content: "Third", inputJson: null, output: null }
+          ]
+        })
+        .expect(202);
+
+      deferred.resolve({
+        status: "completed",
+        finalMarkdown: "Finished",
+        rawOutputRedacted: "",
+        sessionId: null,
+        workDir: null,
+        taskMessages: []
+      });
+      await drainPendingTaskExecutions(app);
+
+      const res = await request(app)
+        .get(`/api/chat-sessions/${sessionId}/events`)
+        .set("Last-Event-ID", "0")
+        .expect(200);
+      const events = parseSseEvents(res.text).filter((event) => event.event === "task_message");
+
+      expect(events.map((event) => event.id)).toEqual(["1", "2"]);
+      expect(events.map((event) => (event.data as { taskMessage: { content: string } }).taskMessage.content)).toEqual([
+        "Second",
+        "Third"
+      ]);
+      expect(events.every((event) => event.id === String((event.data as { seq: number }).seq))).toBe(true);
+    });
   });
 
   describe("single-flight chat session enforcement", () => {
