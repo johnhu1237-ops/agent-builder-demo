@@ -10,6 +10,8 @@ import {
   type AgentSpec,
   type ChatSession,
   type ChatSessionDetail,
+  type AgentTask,
+  type TaskMessage,
   type TaskMessageEvent,
   type TaskTerminalEvent
 } from "@agent-builder/shared";
@@ -35,6 +37,53 @@ type ToolsTab = "apps" | "skills" | "abilities";
 
 function taskMessageStreamKey(input: { taskId: string; seq: number }): string {
   return `${input.taskId}:${input.seq}`;
+}
+
+function activityStatusLabel(status: AgentTask["status"]): string {
+  switch (status) {
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "timed_out":
+      return "Timed out";
+    case "cancelled":
+      return "Cancelled";
+    case "running":
+      return "Running";
+    case "pending":
+      return "Pending";
+  }
+}
+
+function ActivityBlock({ task, taskMessages }: { task: AgentTask; taskMessages: TaskMessage[] }) {
+  const isRunning = !isTerminalTaskStatus(task.status);
+  const [isOpen, setIsOpen] = useState(isRunning);
+
+  useEffect(() => {
+    setIsOpen(isRunning);
+  }, [task.id, isRunning]);
+
+  const eventCount = taskMessages.length;
+  const eventLabel = eventCount === 1 ? "event" : "events";
+
+  return (
+    <details className="trace activity" open={isOpen} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
+      <summary>{`Activity · ${activityStatusLabel(task.status)} · ${eventCount} ${eventLabel}`}</summary>
+      <div className="activity-events">
+        {taskMessages.length > 0 ? (
+          taskMessages.map((taskMessage) => (
+            <div key={taskMessageStreamKey(taskMessage)} className="trace-item">
+              <span className={`trace-type trace-${taskMessage.type}`}>{taskMessage.type}</span>
+              <span className="trace-content">{taskMessage.content.slice(0, 200)}</span>
+            </div>
+          ))
+        ) : (
+          <div className="trace-empty">No activity events yet.</div>
+        )}
+      </div>
+    </details>
+  );
 }
 
 export default function App() {
@@ -618,6 +667,9 @@ export default function App() {
                   <ReactMarkdown>{chatMessage.contentMarkdown}</ReactMarkdown>
                 </article>
               ))}
+              {activeSession.latestTask ? (
+                <ActivityBlock task={activeSession.latestTask} taskMessages={activeSession.taskMessages} />
+              ) : null}
             </div>
 
             {(() => {
@@ -661,20 +713,6 @@ export default function App() {
 
             {error ? <div className="error-banner">{error}</div> : null}
 
-            {activeSession.latestTask && activeSession.taskMessages.length > 0 ? (
-              <details className="trace" open={activeSession.latestTask.status === "running"}>
-                <summary>
-                  Task Timeline
-                  {activeSession.latestTask.status === "running" ? " (running)" : ""}
-                </summary>
-                {activeSession.taskMessages.map((taskMessage) => (
-                  <div key={taskMessageStreamKey(taskMessage)} className="trace-item">
-                    <span className={`trace-type trace-${taskMessage.type}`}>{taskMessage.type}</span>
-                    <span className="trace-content">{taskMessage.content.slice(0, 200)}</span>
-                  </div>
-                ))}
-              </details>
-            ) : null}
           </div>
         ) : null}
       </section>
