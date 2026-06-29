@@ -200,6 +200,14 @@ function hasNonEmptyText(value: string | null): value is string {
   return value != null && value.trim().length > 0;
 }
 
+function assistantFailureMessage(status: FailAgentTaskInput["status"], error: string): string {
+  if (status === "timed_out") {
+    return "Task timed out.";
+  }
+  const trimmed = error.trim();
+  return trimmed ? `Task failed: ${trimmed}` : "Task failed.";
+}
+
 function pickMissingText(current: string | null, incoming: string | null): string | null {
   if (hasNonEmptyText(current)) {
     return current;
@@ -948,6 +956,13 @@ export class PgChatStore {
       }
 
       await insertTaskMessages(client, taskId, input.taskMessages);
+      await client.query(
+        `
+          insert into chat_message (id, chat_session_id, role, content_markdown, task_id)
+          values ($1, $2, 'assistant', $3, $4)
+        `,
+        [nanoid(), taskRow.chat_session_id, assistantFailureMessage(input.status, redactedError), taskId]
+      );
       const shouldUpdatePointers = shouldUpdateResumePointerPair({
         sessionId: input.sessionId,
         workDir: input.workDir

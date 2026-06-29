@@ -64,6 +64,16 @@ function lastEventSeq(req: express.Request): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function terminalSseEventName(status: TaskTerminalEvent["status"]): "task_completed" | "task_failed" | "task_cancelled" {
+  if (status === "completed") {
+    return "task_completed";
+  }
+  if (status === "cancelled") {
+    return "task_cancelled";
+  }
+  return "task_failed";
+}
+
 async function executeAgentTask(params: {
   chatStore: PgChatStore;
   runnerClient: RunnerClient;
@@ -118,7 +128,7 @@ async function executeAgentTask(params: {
     } else {
       const finalTask = await chatStore.failAgentTask(task.id, {
         status: result.status === "timed_out" ? "timed_out" : "failed",
-        error: result.finalMarkdown || "Runner did not produce assistant content",
+        error: redactSecrets(result.finalMarkdown || "Runner did not produce assistant content", [apiKey]),
         rawOutputRedacted: redactSecrets(result.rawOutputRedacted, [apiKey]),
         sessionId: result.sessionId,
         workDir: result.workDir,
@@ -419,7 +429,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
         status: latestTask.status as TaskTerminalEvent["status"],
         error: latestTask.error
       };
-      sendSse(res, `task_${terminal.status}`, terminal);
+      sendSse(res, terminalSseEventName(terminal.status), terminal);
       res.end();
       return;
     }
@@ -428,7 +438,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
       if (event.type === "task_message") {
         sendSse(res, "task_message", event.payload, String(event.payload.seq));
       } else if (event.type === "terminal") {
-        sendSse(res, `task_${event.payload.status}`, event.payload);
+        sendSse(res, terminalSseEventName(event.payload.status), event.payload);
         unsubscribe();
         res.end();
       }

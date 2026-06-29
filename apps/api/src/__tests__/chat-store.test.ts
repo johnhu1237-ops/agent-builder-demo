@@ -926,7 +926,12 @@ describe("PgChatStore", () => {
     expect(detail?.latestTask?.rawOutputRedacted).toBe("OPENAI_API_KEY=[REDACTED]");
     expect(detail?.latestTask?.sessionId).toBe("codex-session-2");
     expect(detail?.latestTask?.workDir).toBe("/tmp/agent-task-2");
-    expect(detail?.messages).toHaveLength(1);
+    expect(detail?.messages).toHaveLength(2);
+    expect(detail?.messages[1]).toMatchObject({
+      role: "assistant",
+      contentMarkdown: "Task failed: First error",
+      taskId: task.id
+    });
     expect(detail?.taskMessages.map((message) => message.content)).toEqual(["first failure"]);
   });
 
