@@ -13,6 +13,7 @@ class FakeEventSource {
   static instances: FakeEventSource[] = [];
   url: string;
   readyState = 0;
+  onerror: (() => void) | null = null;
   private listeners = new Map<string, EventSourceListener[]>();
 
   constructor(url: string) {
@@ -46,12 +47,14 @@ class FakeEventSource {
     }
   }
 
+  fail(): void {
+    this.onerror?.();
+  }
+
   static reset(): void {
     FakeEventSource.instances = [];
   }
 }
-
-(global as Record<string, unknown>).EventSource = FakeEventSource;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
@@ -101,6 +104,7 @@ function sessionDetailFixture(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   global.fetch = fetchMock;
+  (global as Record<string, unknown>).EventSource = FakeEventSource;
   fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
     const method = options?.method ?? "GET";
 
@@ -746,5 +750,349 @@ describe("multi-agent UI", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Replayed update")).toHaveLength(1);
     });
+  });
+
+  it("hydrates Activity from the SSE task_snapshot replay", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Research Acme");
+    await user.click(screen.getByRole("button", { name: /^Send$/ }));
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+
+    const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+
+    act(() => {
+      source.emit("task_snapshot", {
+        task: {
+          id: "task_1",
+          chatSessionId: "chat_1",
+          triggerMessageId: "msg_1",
+          agentSpecSnapshot: defaultAgentSpec,
+          status: "running",
+          sessionId: null,
+          workDir: null,
+          resultMarkdown: null,
+          rawOutputRedacted: null,
+          error: null,
+          createdAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null
+        },
+        taskMessages: [
+          {
+            id: "tm_snapshot_1",
+            taskId: "task_1",
+            seq: 0,
+            type: "status",
+            tool: null,
+            content: "Queued work",
+            inputJson: null,
+            output: null,
+            createdAt: new Date().toISOString()
+          }
+        ]
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Queued work")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Activity · Running · 1 event")).toBeVisible();
+  });
+
+  it("falls back to polling session detail when EventSource is unavailable", async () => {
+    (global as Record<string, unknown>).EventSource = undefined;
+    let detailRequests = 0;
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (url.endsWith("/api/agents") && method === "GET") {
+        return jsonResponse([agentFixture()]);
+      }
+      if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(agentFixture());
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "POST") {
+        return jsonResponse(sessionFixture(), 201);
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([sessionFixture({ id: "chat_list" })]);
+      }
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        detailRequests += 1;
+        if (detailRequests === 1) {
+          return jsonResponse(sessionDetailFixture());
+        }
+        return jsonResponse(
+          sessionDetailFixture({
+            messages: [
+              {
+                id: "msg_1",
+                chatSessionId: "chat_1",
+                role: "user",
+                contentMarkdown: "Research Acme",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              },
+              {
+                id: "msg_2",
+                chatSessionId: "chat_1",
+                role: "assistant",
+                contentMarkdown: "Polling found the final answer.",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              }
+            ],
+            latestTask: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "completed",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: "Polling found the final answer.",
+              rawOutputRedacted: "",
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString()
+            },
+            taskMessages: [
+              {
+                id: "tm_1",
+                taskId: "task_1",
+                seq: 0,
+                type: "status",
+                tool: null,
+                content: "Polled activity",
+                inputJson: null,
+                output: null,
+                createdAt: new Date().toISOString()
+              }
+            ]
+          })
+        );
+      }
+      if (/\/api\/chat-sessions\/[^/]+\/messages$/.test(url) && method === "POST") {
+        return jsonResponse(
+          {
+            chatSessionId: "chat_1",
+            userMessage: {
+              id: "msg_1",
+              chatSessionId: "chat_1",
+              role: "user",
+              contentMarkdown: "Research Acme",
+              taskId: "task_1",
+              createdAt: new Date().toISOString()
+            },
+            task: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "running",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: null,
+              rawOutputRedacted: null,
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: null
+            },
+            eventsUrl: "/api/chat-sessions/chat_1/events"
+          },
+          202
+        );
+      }
+      return jsonResponse(null, 404);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Research Agent/ }));
+    await user.click(await screen.findByRole("button", { name: /\+ New chat/ }));
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Research Acme");
+    await user.click(screen.getByRole("button", { name: /^Send$/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Polling found the final answer.")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Activity · Completed · 1 event")).toBeVisible();
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  it("falls back to polling after repeated SSE failures without duplicating Activity rows", async () => {
+    let detailRequests = 0;
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (url.endsWith("/api/agents") && method === "GET") {
+        return jsonResponse([agentFixture()]);
+      }
+      if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(agentFixture());
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "POST") {
+        return jsonResponse(sessionFixture(), 201);
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([sessionFixture({ id: "chat_list" })]);
+      }
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        detailRequests += 1;
+        if (detailRequests === 1) {
+          return jsonResponse(sessionDetailFixture());
+        }
+        return jsonResponse(
+          sessionDetailFixture({
+            messages: [
+              {
+                id: "msg_1",
+                chatSessionId: "chat_1",
+                role: "user",
+                contentMarkdown: "Research Acme",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              },
+              {
+                id: "msg_2",
+                chatSessionId: "chat_1",
+                role: "assistant",
+                contentMarkdown: "Fallback completed.",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              }
+            ],
+            latestTask: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "completed",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: "Fallback completed.",
+              rawOutputRedacted: "",
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString()
+            },
+            taskMessages: [
+              {
+                id: "tm_live_1",
+                taskId: "task_1",
+                seq: 0,
+                type: "status",
+                tool: null,
+                content: "Live before fallback",
+                inputJson: null,
+                output: null,
+                createdAt: new Date().toISOString()
+              }
+            ]
+          })
+        );
+      }
+      if (/\/api\/chat-sessions\/[^/]+\/messages$/.test(url) && method === "POST") {
+        return jsonResponse(
+          {
+            chatSessionId: "chat_1",
+            userMessage: {
+              id: "msg_1",
+              chatSessionId: "chat_1",
+              role: "user",
+              contentMarkdown: "Research Acme",
+              taskId: "task_1",
+              createdAt: new Date().toISOString()
+            },
+            task: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "running",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: null,
+              rawOutputRedacted: null,
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: null
+            },
+            eventsUrl: "/api/chat-sessions/chat_1/events"
+          },
+          202
+        );
+      }
+      return jsonResponse(null, 404);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Research Agent/ }));
+    await user.click(await screen.findByRole("button", { name: /\+ New chat/ }));
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Research Acme");
+    await user.click(screen.getByRole("button", { name: /^Send$/ }));
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+    const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+
+    act(() => {
+      source.emit("task_message", {
+        taskId: "task_1",
+        seq: 0,
+        taskMessage: {
+          id: "tm_live_1",
+          taskId: "task_1",
+          seq: 0,
+          type: "status",
+          tool: null,
+          content: "Live before fallback",
+          inputJson: null,
+          output: null,
+          createdAt: new Date().toISOString()
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Live before fallback")).toBeInTheDocument();
+    });
+
+    act(() => {
+      source.fail();
+      source.fail();
+      source.fail();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Fallback completed.")).toBeInTheDocument();
+    });
+    expect(screen.getAllByText("Live before fallback")).toHaveLength(1);
+    expect(screen.getByText("Activity · Completed · 1 event")).toBeVisible();
+    expect(source.readyState).toBe(2);
   });
 });
