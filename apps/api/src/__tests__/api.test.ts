@@ -445,6 +445,189 @@ describe("API orchestrator", () => {
     );
   });
 
+  it("issues an Agent Task Lease and passes the MCP gateway contract to the runner", async () => {
+    process.env.API_PUBLIC_BASE_URL = "http://api.internal:4001";
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP lease" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Run with product MCP gateway." })
+      .expect(202);
+
+    const call = runAgentTask.mock.calls[0]![0];
+    expect(call.mcpGatewayUrl).toBe("http://api.internal:4001/mcp/agent-task");
+    expect(call.agentTaskLeaseId).toEqual(expect.any(String));
+    expect(call.agentTaskLeaseToken).toEqual(expect.any(String));
+    expect(call.agentTaskLeaseToken.length).toBeGreaterThan(30);
+
+    const leaseRows = await pool.query<{
+      id: string;
+      agent_task_id: string;
+      token_hash: string;
+      token_plaintext: string | null;
+      issuer: string;
+      audience: string;
+      status: string;
+    }>(`select id, agent_task_id, token_hash, null::text as token_plaintext, issuer, audience, status from agent_task_leases`);
+
+    expect(leaseRows.rows).toHaveLength(1);
+    expect(leaseRows.rows[0].id).toBe(call.agentTaskLeaseId);
+    expect(leaseRows.rows[0].agent_task_id).toBe(call.taskId);
+    expect(leaseRows.rows[0].token_hash).toHaveLength(64);
+    expect(leaseRows.rows[0].token_hash).not.toBe(call.agentTaskLeaseToken);
+    expect(leaseRows.rows[0].token_plaintext).toBeNull();
+    expect(leaseRows.rows[0].issuer).toBe("agent-builder-api");
+    expect(leaseRows.rows[0].audience).toBe("agent-builder-mcp-gateway");
+    expect(leaseRows.rows[0].status).toBe("active");
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
+  it("serves MCP tools/list through the Agent Task Lease bearer token", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+
+    const agent = await store.createAgent({
+      apiKey: "sk-test",
+      spec: {
+        ...defaultAgentSpec,
+        apps: defaultAgentSpec.apps.map((appConfig) =>
+          appConfig.id === "mock-github" ? { ...appConfig, enabled: true } : appConfig
+        )
+      }
+    });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP tools" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "List tools." })
+      .expect(202);
+
+    const leaseToken = runAgentTask.mock.calls[0]![0].agentTaskLeaseToken;
+    await request(app)
+      .post("/mcp/agent-task")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { agentTaskId: "untrusted" } })
+      .expect(401);
+
+    const response = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${leaseToken}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: { agentTaskId: "untrusted" } })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        tools: [
+          {
+            name: "github_create_issue",
+            description: "Create a GitHub issue through the product MCP gateway.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                body: { type: "string" }
+              },
+              required: ["title"]
+            }
+          }
+        ]
+      }
+    });
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
+  it("binds an Agent Task Lease to one sandbox id exactly once", async () => {
+    process.env.RUNNER_EVENT_TOKEN = "runner-token";
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "Sandbox bind" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Bind sandbox." })
+      .expect(202);
+
+    const leaseId = runAgentTask.mock.calls[0]![0].agentTaskLeaseId;
+
+    await request(app)
+      .post(`/internal/agent-task-leases/${leaseId}/bind-sandbox`)
+      .set("authorization", "Bearer runner-token")
+      .send({ sandboxId: "sandbox-1" })
+      .expect(202);
+
+    await request(app)
+      .post(`/internal/agent-task-leases/${leaseId}/bind-sandbox`)
+      .set("authorization", "Bearer runner-token")
+      .send({ sandboxId: "sandbox-1" })
+      .expect(202);
+
+    const conflict = await request(app)
+      .post(`/internal/agent-task-leases/${leaseId}/bind-sandbox`)
+      .set("authorization", "Bearer runner-token")
+      .send({ sandboxId: "sandbox-2" })
+      .expect(409);
+    expect(conflict.body.error).toBe("Agent Task Lease is already bound to a different sandbox");
+
+    await request(app)
+      .post(`/internal/agent-task-leases/${leaseId}/bind-sandbox`)
+      .send({ sandboxId: "sandbox-1" })
+      .expect(401);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
+  it("revokes the Agent Task Lease when the Agent Task reaches a terminal state", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const session = await store.createChatSession({ agentId: agent.id, title: "Revoke lease" });
+
+    await request(app)
+      .post(`/api/chat-sessions/${session.id}/messages`)
+      .send({ message: "Finish task." })
+      .expect(202);
+
+    const leaseToken = runAgentTask.mock.calls[0]![0].agentTaskLeaseToken;
+    await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${leaseToken}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(200);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+
+    await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${leaseToken}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
+      .expect(401);
+  });
+
   it("authenticates and persists internal runner task events", async () => {
     process.env.RUNNER_EVENT_TOKEN = "runner-token";
     const app = createApiApp({ chatStore: store });

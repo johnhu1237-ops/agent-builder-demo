@@ -5,6 +5,7 @@ export type E2BCodexCommandInput = {
   finalPath: string;
   promptPath: string;
   sessionId: string | null;
+  registerMcpGateway?: boolean;
 };
 
 const MODEL_PROVIDER_NAME = "agent_builder_openai_compatible";
@@ -41,5 +42,14 @@ export function buildCodexCommand(input: E2BCodexCommandInput): string {
     parts.push("-C", shellQuote(input.workspacePath));
   }
   parts.push(`"$(cat ${shellQuote(input.promptPath)})"`);
-  return parts.join(" ");
+  const execCommand = parts.join(" ");
+  if (!input.registerMcpGateway) {
+    return execCommand;
+  }
+
+  return [
+    "codex mcp remove agent-builder >/dev/null 2>&1 || true",
+    'codex mcp add agent-builder --url "$AGENT_BUILDER_MCP_GATEWAY_URL" --bearer-token-env-var AGENT_BUILDER_AGENT_TASK_LEASE',
+    execCommand
+  ].join("\n");
 }
