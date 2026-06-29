@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { nanoid } from "nanoid";
 import type { Pool, PoolClient } from "pg";
 import {
@@ -80,6 +81,19 @@ type AgentRow = {
   encrypted_api_key: string | null;
   created_at: Date | string;
   updated_at: Date | string;
+};
+
+export type IssuedAgentTaskLease = {
+  id: string;
+  token: string;
+};
+
+export type ValidatedAgentTaskLease = {
+  id: string;
+  agentTaskId: string;
+  chatSessionId: string;
+  agentId: string;
+  agentSpec: AgentSpec;
 };
 
 export type AgentWithSecret = Agent & { encryptedApiKey: string | null };
@@ -213,6 +227,14 @@ function pickMissingText(current: string | null, incoming: string | null): strin
     return current;
   }
   return hasNonEmptyText(incoming) ? incoming : current;
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function createLeaseToken(): string {
+  return randomBytes(32).toString("base64url");
 }
 
 async function insertTaskMessages(
@@ -755,6 +777,167 @@ export class PgChatStore {
     } finally {
       client.release();
     }
+  }
+
+  async issueAgentTaskLease(taskId: string): Promise<IssuedAgentTaskLease> {
+    const token = createLeaseToken();
+    const now = Date.now();
+    const idleExpiresAt = new Date(now + 15 * 60 * 1000);
+    const absoluteExpiresAt = new Date(now + 2 * 60 * 60 * 1000);
+    const result = await this.pool.query<{ id: string }>(
+      `
+        insert into agent_task_leases (
+          id,
+          agent_task_id,
+          token_hash,
+          issuer,
+          audience,
+          status,
+          expires_at,
+          absolute_expires_at
+        )
+        values ($1, $2, $3, $4, $5, 'active', $6, $7)
+        returning id
+      `,
+      [
+        nanoid(),
+        taskId,
+        sha256Hex(token),
+        "agent-builder-api",
+        "agent-builder-mcp-gateway",
+        idleExpiresAt,
+        absoluteExpiresAt
+      ]
+    );
+
+    return { id: result.rows[0].id, token };
+  }
+
+  async validateAgentTaskLease(token: string): Promise<ValidatedAgentTaskLease | null> {
+    const result = await this.pool.query<{
+      id: string;
+      agent_task_id: string;
+      chat_session_id: string;
+      agent_id: string;
+      agent_spec: AgentSpec;
+      issuer: string;
+      audience: string;
+      status: string;
+      expires_at: Date | string;
+      absolute_expires_at: Date | string;
+      revoked_at: Date | string | null;
+    }>(
+      `
+        select
+          l.id,
+          l.agent_task_id,
+          t.chat_session_id,
+          s.agent_id,
+          a.spec as agent_spec,
+          l.issuer,
+          l.audience,
+          l.status,
+          l.expires_at,
+          l.absolute_expires_at,
+          l.revoked_at
+        from agent_task_leases l
+        join agent_tasks t on t.id = l.agent_task_id
+        join chat_session s on s.id = t.chat_session_id
+        join agents a on a.id = s.agent_id
+        where l.token_hash = $1
+        limit 1
+      `,
+      [sha256Hex(token)]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    const now = new Date();
+    if (
+      row.status !== "active" ||
+      row.revoked_at != null ||
+      row.issuer !== "agent-builder-api" ||
+      row.audience !== "agent-builder-mcp-gateway" ||
+      new Date(row.expires_at).getTime() <= now.getTime() ||
+      new Date(row.absolute_expires_at).getTime() <= now.getTime()
+    ) {
+      return null;
+    }
+
+    const renewedIdleExpiry = new Date(now.getTime() + 15 * 60 * 1000);
+    const absoluteExpiry = new Date(row.absolute_expires_at);
+    const nextExpiresAt = renewedIdleExpiry.getTime() < absoluteExpiry.getTime() ? renewedIdleExpiry : absoluteExpiry;
+    await this.pool.query(
+      `
+        update agent_task_leases
+        set expires_at = $2,
+            updated_at = now()
+        where id = $1
+      `,
+      [row.id, nextExpiresAt]
+    );
+
+    return {
+      id: row.id,
+      agentTaskId: row.agent_task_id,
+      chatSessionId: row.chat_session_id,
+      agentId: row.agent_id,
+      agentSpec: row.agent_spec
+    };
+  }
+
+  async bindAgentTaskLeaseSandbox(leaseId: string, sandboxId: string): Promise<"bound" | "not_found" | "conflict"> {
+    const trimmedSandboxId = sandboxId.trim();
+    if (!trimmedSandboxId) {
+      throw new Error("sandboxId is required");
+    }
+
+    const updated = await this.pool.query<{ id: string }>(
+      `
+        update agent_task_leases
+        set sandbox_id = $2,
+            updated_at = now()
+        where id = $1
+          and status = 'active'
+          and (sandbox_id is null or sandbox_id = $2)
+        returning id
+      `,
+      [leaseId, trimmedSandboxId]
+    );
+    if (updated.rows[0]) {
+      return "bound";
+    }
+
+    const existing = await this.pool.query<{ sandbox_id: string | null }>(
+      `
+        select sandbox_id
+        from agent_task_leases
+        where id = $1
+      `,
+      [leaseId]
+    );
+    if (!existing.rows[0]) {
+      return "not_found";
+    }
+    return existing.rows[0].sandbox_id && existing.rows[0].sandbox_id !== trimmedSandboxId
+      ? "conflict"
+      : "not_found";
+  }
+
+  async revokeAgentTaskLeases(taskId: string): Promise<void> {
+    await this.pool.query(
+      `
+        update agent_task_leases
+        set status = 'revoked',
+            revoked_at = coalesce(revoked_at, now()),
+            updated_at = now()
+        where agent_task_id = $1
+          and status = 'active'
+      `,
+      [taskId]
+    );
   }
 
   async markAgentTaskRunning(taskId: string): Promise<AgentTask | null> {

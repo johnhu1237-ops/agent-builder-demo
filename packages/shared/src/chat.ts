@@ -103,6 +103,9 @@ export type RunnerEventsTarget = {
 export type CreateAgentTaskRequest = {
   chatSessionId: string;
   taskId?: string;
+  mcpGatewayUrl?: string;
+  agentTaskLeaseId?: string;
+  agentTaskLeaseToken?: string;
   message: string;
   agentSpec: AgentSpec;
   runtimeSecrets: {

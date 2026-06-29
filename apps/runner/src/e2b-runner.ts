@@ -11,15 +11,48 @@ export type RunE2BAgentTaskOptions = {
   templateId?: string;
   factory?: E2BSandboxFactory;
   emitEvent?: RunnerEventEmitter;
+  bindAgentTaskLeaseSandbox?: AgentTaskLeaseSandboxBinder;
 };
+
+export type AgentTaskLeaseSandboxBinder = (input: {
+  leaseId: string;
+  sandboxId: string;
+  runnerEventsEndpoint: string;
+  runnerEventsToken: string;
+}) => Promise<void>;
 
 const WORKSPACE_PATH = "/home/user/workspace";
 const PROMPT_PATH = `${WORKSPACE_PATH}/prompt.md`;
 const FINAL_PATH = `${WORKSPACE_PATH}/final.md`;
 export const DEFAULT_RUN_TIMEOUT_MS = 90000;
 
+export const bindAgentTaskLeaseSandbox: AgentTaskLeaseSandboxBinder = async (input) => {
+  const endpoint = new URL(input.runnerEventsEndpoint);
+  endpoint.pathname = `/internal/agent-task-leases/${encodeURIComponent(input.leaseId)}/bind-sandbox`;
+  endpoint.search = "";
+  endpoint.hash = "";
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${input.runnerEventsToken}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ sandboxId: input.sandboxId })
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Agent Task Lease sandbox bind failed with ${response.status}: ${body}`);
+  }
+};
+
 function splitLines(chunk: string): string[] {
   return chunk.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function presentSecret(value: string | undefined): value is string {
+  return Boolean(value?.trim());
 }
 
 export async function runE2BAgentTask(
@@ -36,9 +69,30 @@ export async function runE2BAgentTask(
     throw new Error("E2B_API_KEY is required for RUNNER_MODE=e2b");
   }
 
-  const secretValues = [request.runtimeSecrets.apiKey].filter(Boolean);
-  const codexEnv = { CODEX_API_KEY: request.runtimeSecrets.apiKey };
+  const secretValues = [request.runtimeSecrets.apiKey, request.agentTaskLeaseToken].filter(presentSecret);
+  const hasMcpGateway = Boolean(request.mcpGatewayUrl?.trim() && request.agentTaskLeaseToken?.trim() && request.agentTaskLeaseId?.trim());
+  const codexEnv = {
+    CODEX_API_KEY: request.runtimeSecrets.apiKey,
+    ...(hasMcpGateway
+      ? {
+          AGENT_BUILDER_MCP_GATEWAY_URL: request.mcpGatewayUrl!,
+          AGENT_BUILDER_AGENT_TASK_LEASE: request.agentTaskLeaseToken!
+        }
+      : {})
+  };
   const resolved = await resolveSandbox({ workDir: request.workDir, templateId, factory, envs: codexEnv });
+  if (hasMcpGateway) {
+    if (!request.runnerEvents) {
+      throw new Error("runnerEvents are required to bind an Agent Task Lease to an E2B sandbox");
+    }
+    const bindLease = options?.bindAgentTaskLeaseSandbox ?? bindAgentTaskLeaseSandbox;
+    await bindLease({
+      leaseId: request.agentTaskLeaseId!,
+      sandboxId: resolved.sandbox.sandboxId,
+      runnerEventsEndpoint: request.runnerEvents.endpoint,
+      runnerEventsToken: request.runnerEvents.token
+    });
+  }
   const localEvents: RunnerTaskMessage[] = [];
   const emitEvent = options?.emitEvent ?? createRunnerEventEmitter({
     taskId: request.taskId,
@@ -79,7 +133,8 @@ export async function runE2BAgentTask(
     workspacePath: WORKSPACE_PATH,
     finalPath: FINAL_PATH,
     promptPath: PROMPT_PATH,
-    sessionId: effectiveSessionId
+    sessionId: effectiveSessionId,
+    registerMcpGateway: hasMcpGateway
   });
   const rawChunks: string[] = [];
   let sessionId: string | null = null;
