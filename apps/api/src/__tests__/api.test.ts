@@ -110,6 +110,42 @@ describe("API orchestrator", () => {
     expect(listResponse.body[0].title).toBe("Acme research");
   });
 
+  it("reads and updates Tool Configuration for an Agent", async () => {
+    const app = createApiApp({ chatStore: store });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+
+    const listResponse = await request(app)
+      .get(`/api/agents/${agent.id}/tool-configurations`)
+      .expect(200);
+
+    expect(listResponse.body).toEqual([
+      expect.objectContaining({
+        appId: "mock-github",
+        toolName: "github_create_issue",
+        mode: "ask_each_time"
+      })
+    ]);
+
+    const toolConfigurationId = listResponse.body[0].id;
+    const updateResponse = await request(app)
+      .patch(`/api/agents/${agent.id}/tool-configurations/${toolConfigurationId}`)
+      .send({ mode: "disabled" })
+      .expect(200);
+
+    expect(updateResponse.body).toEqual(expect.objectContaining({ id: toolConfigurationId, mode: "disabled" }));
+    await request(app)
+      .patch(`/api/agents/${agent.id}/tool-configurations/${toolConfigurationId}`)
+      .send({ mode: "enabled" })
+      .expect(400);
+  });
+
   it("schedules the agent task and returns a 202 scheduled response without awaiting the runner", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
@@ -492,19 +528,18 @@ describe("API orchestrator", () => {
     await drainPendingTaskExecutions(app);
   });
 
-  it("serves MCP tools/list through the Agent Task Lease bearer token", async () => {
+  it("serves MCP tools/list from persisted Tool Configuration through the Agent Task Lease bearer token", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
     const app = createApiApp({ chatStore: store, runAgentTask });
 
-    const agent = await store.createAgent({
-      apiKey: "sk-test",
-      spec: {
-        ...defaultAgentSpec,
-        apps: defaultAgentSpec.apps.map((appConfig) =>
-          appConfig.id === "mock-github" ? { ...appConfig, enabled: true } : appConfig
-        )
-      }
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    const connectedAccount = await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
     });
     const sessionResponse = await request(app)
       .post("/api/chat-sessions")
@@ -548,6 +583,22 @@ describe("API orchestrator", () => {
         ]
       }
     });
+
+    const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+    expect(toolConfiguration.connectedAccountId).toBe(connectedAccount.id);
+    await store.updateToolConfigurationMode({
+      agentId: agent.id,
+      toolConfigurationId: toolConfiguration.id,
+      mode: "disabled"
+    });
+
+    const disabledResponse = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${leaseToken}`)
+      .send({ jsonrpc: "2.0", id: 3, method: "tools/list" })
+      .expect(200);
+
+    expect(disabledResponse.body.result.tools).toEqual([]);
 
     deferred.resolve(completedRunnerResult);
     await drainPendingTaskExecutions(app);

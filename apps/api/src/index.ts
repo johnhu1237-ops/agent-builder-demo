@@ -18,7 +18,7 @@ import {
 } from "@agent-builder/shared";
 import { agentTaskMcpGatewayEndpoint, getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
 import { runChatMigrations } from "./chat-migrations";
-import { PgChatStore } from "./chat-store";
+import { PgChatStore, type ToolConfiguration } from "./chat-store";
 import { redactSecrets } from "./redaction";
 import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
 import { decryptApiKey, validateEncryptionKey } from "./encryption";
@@ -57,52 +57,50 @@ function jsonRpcError(id: unknown, code: number, message: string) {
   return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
 }
 
-function toolsForAgentSpec(agentSpec: AgentSpec) {
-  const enabledApps = new Set(agentSpec.apps.filter((app) => app.enabled).map((app) => app.id));
-  const tools = [];
-  if (enabledApps.has("mock-github")) {
-    tools.push({
-      name: "github_create_issue",
-      description: "Create a GitHub issue through the product MCP gateway.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          body: { type: "string" }
-        },
-        required: ["title"]
-      }
-    });
+const gatewayToolDefinitions = {
+  github_create_issue: {
+    name: "github_create_issue",
+    description: "Create a GitHub issue through the product MCP gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        body: { type: "string" }
+      },
+      required: ["title"]
+    }
+  },
+  slack_post_message: {
+    name: "slack_post_message",
+    description: "Post a Slack message through the product MCP gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string" },
+        text: { type: "string" }
+      },
+      required: ["channel", "text"]
+    }
+  },
+  notion_create_page: {
+    name: "notion_create_page",
+    description: "Create a Notion page through the product MCP gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        content: { type: "string" }
+      },
+      required: ["title"]
+    }
   }
-  if (enabledApps.has("mock-slack")) {
-    tools.push({
-      name: "slack_post_message",
-      description: "Post a Slack message through the product MCP gateway.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          channel: { type: "string" },
-          text: { type: "string" }
-        },
-        required: ["channel", "text"]
-      }
-    });
-  }
-  if (enabledApps.has("mock-notion")) {
-    tools.push({
-      name: "notion_create_page",
-      description: "Create a Notion page through the product MCP gateway.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          content: { type: "string" }
-        },
-        required: ["title"]
-      }
-    });
-  }
-  return tools;
+} as const;
+
+function toolsForToolConfigurations(toolConfigurations: ToolConfiguration[]) {
+  return toolConfigurations
+    .filter((toolConfiguration) => toolConfiguration.mode !== "disabled")
+    .map((toolConfiguration) => gatewayToolDefinitions[toolConfiguration.toolName as keyof typeof gatewayToolDefinitions])
+    .filter((tool): tool is (typeof gatewayToolDefinitions)[keyof typeof gatewayToolDefinitions] => Boolean(tool));
 }
 
 function statusFromError(message: string): Exclude<AgentTaskStatus, "pending" | "running" | "completed" | "cancelled"> {
@@ -321,6 +319,35 @@ export function createApiApp(deps: ApiDependencies = {}) {
     try {
       const agent = await chatStore.updateAgent(req.params.id, input);
       res.json(publicAgent(agent));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Update failed";
+      res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
+    }
+  });
+
+  app.get("/api/agents/:id/tool-configurations", async (req, res) => {
+    const agent = await chatStore.getAgent(req.params.id);
+    if (!agent) {
+      res.status(404).json(stableError("Agent not found"));
+      return;
+    }
+    res.json(await chatStore.listToolConfigurationsForAgent(req.params.id));
+  });
+
+  app.patch("/api/agents/:id/tool-configurations/:toolConfigurationId", async (req, res) => {
+    const mode = String(req.body.mode ?? "");
+    if (!["auto", "ask_each_time", "disabled"].includes(mode)) {
+      res.status(400).json(stableError("Tool Configuration mode must be auto, ask_each_time, or disabled"));
+      return;
+    }
+
+    try {
+      const updated = await chatStore.updateToolConfigurationMode({
+        agentId: req.params.id,
+        toolConfigurationId: req.params.toolConfigurationId,
+        mode: mode as "auto" | "ask_each_time" | "disabled"
+      });
+      res.json(updated);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Update failed";
       res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
@@ -550,7 +577,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
     }
 
     if (method === "tools/list") {
-      res.json(jsonRpcResult(id, { tools: toolsForAgentSpec(lease.agentSpec) }));
+      const toolConfigurations = await chatStore.listToolConfigurationsForAgent(lease.agentId);
+      res.json(jsonRpcResult(id, { tools: toolsForToolConfigurations(toolConfigurations) }));
       return;
     }
 

@@ -83,6 +83,28 @@ type AgentRow = {
   updated_at: Date | string;
 };
 
+type ConnectedAccountRow = {
+  id: string;
+  workspace_id: string;
+  app_id: string;
+  account_label: string;
+  external_account_id: string;
+  status: ConnectedAccount["status"];
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type ToolConfigurationRow = {
+  id: string;
+  agent_id: string;
+  connected_account_id: string;
+  app_id: string;
+  tool_name: string;
+  mode: ToolConfigurationMode;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
 export type IssuedAgentTaskLease = {
   id: string;
   token: string;
@@ -97,8 +119,51 @@ export type ValidatedAgentTaskLease = {
 };
 
 export type AgentWithSecret = Agent & { encryptedApiKey: string | null };
+export type ToolConfigurationMode = "auto" | "ask_each_time" | "disabled";
+
+export type ConnectedAccount = {
+  id: string;
+  workspaceId: string;
+  appId: string;
+  accountLabel: string;
+  externalAccountId: string;
+  status: "connected" | "disconnected";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ToolConfiguration = {
+  id: string;
+  agentId: string;
+  connectedAccountId: string;
+  appId: string;
+  toolName: string;
+  mode: ToolConfigurationMode;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateConnectedAccountInput = {
+  workspaceId: string;
+  appId: string;
+  accountLabel: string;
+  externalAccountId: string;
+  agentIds: string[];
+};
+
+export type UpdateToolConfigurationModeInput = {
+  agentId: string;
+  toolConfigurationId: string;
+  mode: ToolConfigurationMode;
+};
 
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
+const toolConfigurationModes = new Set<ToolConfigurationMode>(["auto", "ask_each_time", "disabled"]);
+const seededConnectorTools: Record<string, string[]> = {
+  "mock-github": ["github_create_issue"],
+  "mock-slack": ["slack_post_message"],
+  "mock-notion": ["notion_create_page"]
+};
 
 type CompleteAgentTaskInput = {
   status: "completed";
@@ -192,6 +257,32 @@ function mapAgent(row: AgentRow): AgentWithSecret {
     spec: row.spec,
     hasApiKey: Boolean(row.encrypted_api_key),
     encryptedApiKey: row.encrypted_api_key ?? null,
+    createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
+    updatedAt: toIsoString(row.updated_at) ?? new Date(0).toISOString()
+  };
+}
+
+function mapConnectedAccount(row: ConnectedAccountRow): ConnectedAccount {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    appId: row.app_id,
+    accountLabel: row.account_label,
+    externalAccountId: row.external_account_id,
+    status: row.status,
+    createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
+    updatedAt: toIsoString(row.updated_at) ?? new Date(0).toISOString()
+  };
+}
+
+function mapToolConfiguration(row: ToolConfigurationRow): ToolConfiguration {
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    connectedAccountId: row.connected_account_id,
+    appId: row.app_id,
+    toolName: row.tool_name,
+    mode: row.mode,
     createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
     updatedAt: toIsoString(row.updated_at) ?? new Date(0).toISOString()
   };
@@ -498,6 +589,125 @@ export class PgChatStore {
     }
 
     return mapAgent(result.rows[0]);
+  }
+
+  async createConnectedAccount(input: CreateConnectedAccountInput): Promise<ConnectedAccount> {
+    const appId = input.appId.trim();
+    const tools = seededConnectorTools[appId] ?? [];
+    if (tools.length === 0) {
+      throw new Error(`Unknown connected app id: ${appId}`);
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query<ConnectedAccountRow>(
+        `
+          insert into connected_accounts (
+            id,
+            workspace_id,
+            app_id,
+            account_label,
+            external_account_id,
+            status
+          )
+          values ($1, $2, $3, $4, $5, 'connected')
+          on conflict (workspace_id, app_id, external_account_id) do update
+          set account_label = excluded.account_label,
+              status = 'connected',
+              updated_at = now()
+          returning *
+        `,
+        [
+          nanoid(),
+          input.workspaceId.trim(),
+          appId,
+          input.accountLabel.trim(),
+          input.externalAccountId.trim()
+        ]
+      );
+      const connectedAccount = result.rows[0];
+
+      for (const agentId of input.agentIds) {
+        await client.query(
+          `
+            insert into connected_account_agents (connected_account_id, agent_id)
+            values ($1, $2)
+            on conflict (connected_account_id, agent_id) do nothing
+          `,
+          [connectedAccount.id, agentId]
+        );
+
+        for (const toolName of tools) {
+          await client.query(
+            `
+              insert into tool_configurations (
+                id,
+                agent_id,
+                connected_account_id,
+                app_id,
+                tool_name,
+                mode
+              )
+              values ($1, $2, $3, $4, $5, 'ask_each_time')
+              on conflict (agent_id, connected_account_id, tool_name) do nothing
+            `,
+            [nanoid(), agentId, connectedAccount.id, appId, toolName]
+          );
+        }
+      }
+
+      await client.query("commit");
+      return mapConnectedAccount(connectedAccount);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listToolConfigurationsForAgent(agentId: string): Promise<ToolConfiguration[]> {
+    const result = await this.pool.query<ToolConfigurationRow>(
+      `
+        select tc.*
+        from tool_configurations tc
+        join connected_accounts ca on ca.id = tc.connected_account_id
+        join connected_account_agents caa
+          on caa.connected_account_id = ca.id
+         and caa.agent_id = tc.agent_id
+        where tc.agent_id = $1
+          and ca.status = 'connected'
+        order by ca.app_id asc, tc.tool_name asc
+      `,
+      [agentId]
+    );
+
+    return result.rows.map(mapToolConfiguration);
+  }
+
+  async updateToolConfigurationMode(input: UpdateToolConfigurationModeInput): Promise<ToolConfiguration> {
+    if (!toolConfigurationModes.has(input.mode)) {
+      throw new Error(`Unsupported Tool Configuration mode: ${input.mode}`);
+    }
+
+    const result = await this.pool.query<ToolConfigurationRow>(
+      `
+        update tool_configurations
+        set mode = $3,
+            updated_at = now()
+        where id = $1
+          and agent_id = $2
+        returning *
+      `,
+      [input.toolConfigurationId, input.agentId, input.mode]
+    );
+
+    if (!result.rows[0]) {
+      throw new Error(`Tool Configuration not found: ${input.toolConfigurationId}`);
+    }
+
+    return mapToolConfiguration(result.rows[0]);
   }
 
   async createChatSession(

@@ -664,6 +664,55 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
     `
   );
 
+  await createTableIfNeeded(
+    db,
+    "connected_accounts",
+    `
+      create table if not exists connected_accounts (
+        id text primary key,
+        workspace_id text not null,
+        app_id text not null,
+        account_label text not null,
+        external_account_id text not null,
+        status text not null check (status in ('connected', 'disconnected')),
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (workspace_id, app_id, external_account_id)
+      )
+    `
+  );
+
+  await createTableIfNeeded(
+    db,
+    "connected_account_agents",
+    `
+      create table if not exists connected_account_agents (
+        connected_account_id text not null references connected_accounts(id) on delete cascade,
+        agent_id text not null references agents(id) on delete cascade,
+        created_at timestamptz not null default now(),
+        primary key (connected_account_id, agent_id)
+      )
+    `
+  );
+
+  await createTableIfNeeded(
+    db,
+    "tool_configurations",
+    `
+      create table if not exists tool_configurations (
+        id text primary key,
+        agent_id text not null references agents(id) on delete cascade,
+        connected_account_id text not null references connected_accounts(id) on delete cascade,
+        app_id text not null,
+        tool_name text not null,
+        mode text not null check (mode in ('auto', 'ask_each_time', 'disabled')),
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (agent_id, connected_account_id, tool_name)
+      )
+    `
+  );
+
   await createNonUniqueIndexIfNeeded(
     db,
     "idx_agent_task_leases_agent_task_id",

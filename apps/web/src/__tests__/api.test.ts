@@ -1,6 +1,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
-const { createAgent, listAgents, getAgent, updateAgent, createChatSession, sendChatMessage } = await import("../api");
+const {
+  createAgent,
+  listAgents,
+  getAgent,
+  updateAgent,
+  createChatSession,
+  sendChatMessage,
+  listToolConfigurations,
+  updateToolConfigurationMode
+} = await import("../api");
 
 const fetchMock = vi.fn();
 let lastFetchBody: unknown = null;
@@ -16,6 +25,32 @@ describe("api client", () => {
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
       if (options?.body) lastFetchBody = JSON.parse(options.body as string);
       if (url.includes("/api/agents")) {
+        if (url.includes("/tool-configurations")) {
+          if (options?.method === "PATCH") {
+            return jsonResponse({
+              id: "tool_config_1",
+              agentId: "agent_1",
+              connectedAccountId: "connected_account_1",
+              appId: "mock-github",
+              toolName: "github_create_issue",
+              mode: "disabled",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            });
+          }
+          return jsonResponse([
+            {
+              id: "tool_config_1",
+              agentId: "agent_1",
+              connectedAccountId: "connected_account_1",
+              appId: "mock-github",
+              toolName: "github_create_issue",
+              mode: "ask_each_time",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          ]);
+        }
         if (options?.method === "POST") {
           return jsonResponse({
             id: "agent_1",
@@ -109,6 +144,16 @@ describe("api client", () => {
         }
       });
       expect(agent.name).toBe("Updated");
+    });
+
+    it("reads and updates Tool Configuration modes", async () => {
+      const toolConfigurations = await listToolConfigurations("agent_1");
+      expect(toolConfigurations[0].mode).toBe("ask_each_time");
+
+      const updated = await updateToolConfigurationMode("agent_1", "tool_config_1", "disabled");
+
+      expect(updated.mode).toBe("disabled");
+      expect(lastFetchBody).toEqual({ mode: "disabled" });
     });
   });
 
