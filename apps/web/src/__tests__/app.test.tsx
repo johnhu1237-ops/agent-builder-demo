@@ -608,6 +608,77 @@ describe("multi-agent UI", () => {
     expect(source.readyState).toBe(2);
   });
 
+  it("opens the SSE connection from the scheduled response eventsUrl", async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (url.endsWith("/api/agents") && method === "GET") {
+        return jsonResponse([agentFixture()]);
+      }
+      if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(agentFixture());
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "POST") {
+        return jsonResponse(sessionFixture(), 201);
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([]);
+      }
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(sessionDetailFixture());
+      }
+      if (/\/api\/chat-sessions\/[^/]+\/messages$/.test(url) && method === "POST") {
+        const body = options?.body ? JSON.parse(options.body as string) : {};
+        return jsonResponse(
+          {
+            chatSessionId: "chat_1",
+            userMessage: {
+              id: "msg_1",
+              chatSessionId: "chat_1",
+              role: "user",
+              contentMarkdown: body.message ?? "",
+              taskId: "task_1",
+              createdAt: new Date().toISOString()
+            },
+            task: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "running",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: null,
+              rawOutputRedacted: null,
+              error: null,
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: null
+            },
+            eventsUrl: "/api/custom-streams/chat_1"
+          },
+          202
+        );
+      }
+      return jsonResponse(null, 404);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Research Agent/ }));
+    await user.click(await screen.findByRole("button", { name: /\+ New chat/ }));
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Research Acme");
+    await user.click(screen.getByRole("button", { name: /^Send$/ }));
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+    expect(FakeEventSource.instances.at(-1)?.url).toBe("http://localhost:4001/api/custom-streams/chat_1");
+  });
+
   it("collapses completed Activity to a summary and lets users expand it", async () => {
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
       const method = options?.method ?? "GET";
