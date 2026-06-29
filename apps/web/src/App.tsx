@@ -13,6 +13,7 @@ import {
   type AgentTask,
   type TaskMessage,
   type TaskMessageEvent,
+  type TaskSnapshotEvent,
   type TaskTerminalEvent
 } from "@agent-builder/shared";
 import { createExportPayload } from "./defaults";
@@ -37,6 +38,20 @@ type ToolsTab = "apps" | "skills" | "abilities";
 
 function taskMessageStreamKey(input: { taskId: string; seq: number }): string {
   return `${input.taskId}:${input.seq}`;
+}
+
+function mergeTaskMessages(existing: TaskMessage[], incoming: TaskMessage[]): TaskMessage[] {
+  const seen = new Set(existing.map(taskMessageStreamKey));
+  const merged = [...existing];
+  for (const message of incoming) {
+    const key = taskMessageStreamKey(message);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(message);
+  }
+  return merged.sort((a, b) => a.seq - b.seq);
 }
 
 function activityStatusLabel(status: AgentTask["status"]): string {
@@ -116,13 +131,57 @@ export default function App() {
   const loadingIdRef = useRef<string | null>(null);
   const [loadingChatId, setLoadingChatId] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const pollingTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
+      if (pollingTimerRef.current != null) {
+        window.clearTimeout(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
     };
   }, []);
+
+  function stopPolling() {
+    if (pollingTimerRef.current != null) {
+      window.clearTimeout(pollingTimerRef.current);
+      pollingTimerRef.current = null;
+    }
+  }
+
+  function refreshSessionsList() {
+    listChatSessions()
+      .then((list) => setSessions(list))
+      .catch(() => undefined);
+  }
+
+  function refreshActiveSession(sessionId: string) {
+    return getChatSession(sessionId).then((detail) => {
+      setActiveSession((prev) => (prev && prev.id === sessionId ? detail : prev));
+      return detail;
+    });
+  }
+
+  function startPollingSession(sessionId: string) {
+    stopPolling();
+    const poll = () => {
+      refreshActiveSession(sessionId)
+        .then((detail) => {
+          if (detail.latestTask && isTerminalTaskStatus(detail.latestTask.status)) {
+            stopPolling();
+            refreshSessionsList();
+            return;
+          }
+          pollingTimerRef.current = window.setTimeout(poll, 1500);
+        })
+        .catch(() => {
+          pollingTimerRef.current = window.setTimeout(poll, 1500);
+        });
+    };
+    poll();
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -267,17 +326,54 @@ export default function App() {
       setSendState("idle");
 
       eventSourceRef.current?.close();
+      stopPolling();
+      if (typeof EventSource !== "function") {
+        startPollingSession(sessionId);
+        return;
+      }
+
       const source = createTaskEventSource(sessionId);
       eventSourceRef.current = source;
+      let receivedUsableSseEvent = false;
+      let sseFailureCount = 0;
+
+      const markSseUsable = () => {
+        receivedUsableSseEvent = true;
+        sseFailureCount = 0;
+      };
+
+      const fallBackToPolling = () => {
+        source.close();
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null;
+        }
+        startPollingSession(sessionId);
+      };
+
+      const handleSnapshot = (rawEvent: MessageEvent) => {
+        try {
+          const data = JSON.parse(rawEvent.data) as TaskSnapshotEvent;
+          markSseUsable();
+          setActiveSession((prev) => {
+            if (!prev || prev.id !== sessionId) return prev;
+            return {
+              ...prev,
+              latestTask: data.task ?? prev.latestTask,
+              taskMessages: mergeTaskMessages(prev.taskMessages, data.taskMessages)
+            };
+          });
+        } catch {
+          // ignore malformed events
+        }
+      };
 
       const handleTaskMessage = (rawEvent: MessageEvent) => {
         try {
           const data = JSON.parse(rawEvent.data) as TaskMessageEvent;
+          markSseUsable();
           setActiveSession((prev) => {
             if (!prev || prev.id !== sessionId) return prev;
-            const incomingKey = taskMessageStreamKey({ taskId: data.taskId, seq: data.seq });
-            if (prev.taskMessages.some((m) => taskMessageStreamKey(m) === incomingKey)) return prev;
-            return { ...prev, taskMessages: [...prev.taskMessages, data.taskMessage] };
+            return { ...prev, taskMessages: mergeTaskMessages(prev.taskMessages, [data.taskMessage]) };
           });
         } catch {
           // ignore malformed events
@@ -290,20 +386,24 @@ export default function App() {
         } catch {
           // continue with refetch anyway
         }
+        markSseUsable();
         source.close();
         if (eventSourceRef.current === source) {
           eventSourceRef.current = null;
         }
-        getChatSession(sessionId)
-          .then((detail) => {
-            setActiveSession((prev) => (prev && prev.id === sessionId ? detail : prev));
-          })
-          .catch(() => undefined);
-        listChatSessions()
-          .then((list) => setSessions(list))
-          .catch(() => undefined);
+        refreshActiveSession(sessionId).catch(() => undefined);
+        refreshSessionsList();
       };
 
+      source.onerror = () => {
+        sseFailureCount += 1;
+        if (receivedUsableSseEvent && sseFailureCount < 3) {
+          return;
+        }
+        fallBackToPolling();
+      };
+
+      source.addEventListener("task_snapshot", handleSnapshot as EventListener);
       source.addEventListener("task_message", handleTaskMessage as EventListener);
       source.addEventListener("task_completed", handleTerminal as EventListener);
       source.addEventListener("task_failed", handleTerminal as EventListener);
