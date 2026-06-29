@@ -220,6 +220,75 @@ describe("API orchestrator", () => {
     expect(JSON.stringify(detailResponse.body)).not.toContain("sk-test");
   });
 
+  it("persists a concise assistant message when the runner returns a failed task", async () => {
+    const runAgentTask = vi.fn().mockResolvedValue({
+      status: "failed",
+      finalMarkdown: "Codex exited with code 1 and mentioned sk-test in detailed logs",
+      rawOutputRedacted: "long raw output sk-test",
+      sessionId: "runner-session-1",
+      workDir: "/tmp/session-1",
+      taskMessages: [
+        {
+          type: "error",
+          tool: null,
+          content: "Detailed failure sk-test",
+          inputJson: null,
+          output: "stack trace sk-test"
+        }
+      ]
+    } satisfies RunnerAgentTaskResponse);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const session = await store.createChatSession({ agentId: agent.id, title: "Failed turn" });
+
+    await request(app)
+      .post(`/api/chat-sessions/${session.id}/messages`)
+      .send({ message: "This will fail" })
+      .expect(202);
+    await drainPendingTaskExecutions(app);
+
+    const detailResponse = await request(app)
+      .get(`/api/chat-sessions/${session.id}`)
+      .expect(200);
+
+    expect(detailResponse.body.latestTask.status).toBe("failed");
+    expect(detailResponse.body.messages).toHaveLength(2);
+    expect(detailResponse.body.messages[1].role).toBe("assistant");
+    expect(detailResponse.body.messages[1].contentMarkdown).toBe("Task failed: Codex exited with code 1 and mentioned [REDACTED] in detailed logs");
+    expect(detailResponse.body.taskMessages).toHaveLength(1);
+    expect(detailResponse.body.taskMessages[0].content).toBe("Detailed failure [REDACTED]");
+    expect(detailResponse.body.taskMessages[0].output).toBe("stack trace [REDACTED]");
+    expect(JSON.stringify(detailResponse.body)).not.toContain("sk-test");
+  });
+
+  it("persists a concise assistant message when the runner times out", async () => {
+    const runAgentTask = vi.fn().mockResolvedValue({
+      status: "timed_out",
+      finalMarkdown: "",
+      rawOutputRedacted: "timeout logs",
+      sessionId: null,
+      workDir: null,
+      taskMessages: [
+        { type: "error", tool: null, content: "Command timed out", inputJson: null, output: null }
+      ]
+    } satisfies RunnerAgentTaskResponse);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const session = await store.createChatSession({ agentId: agent.id, title: "Timeout turn" });
+
+    await request(app)
+      .post(`/api/chat-sessions/${session.id}/messages`)
+      .send({ message: "This will time out" })
+      .expect(202);
+    await drainPendingTaskExecutions(app);
+
+    const detail = await store.getChatSessionDetail(session.id);
+    expect(detail?.latestTask?.status).toBe("timed_out");
+    expect(detail?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(detail?.messages[1].contentMarkdown).toBe("Task timed out.");
+    expect(detail?.taskMessages[0].content).toBe("Command timed out");
+  });
+
   it("passes existing session pointers to the runner on follow-up messages", async () => {
     const runAgentTask = vi
       .fn()
@@ -511,6 +580,59 @@ describe("API orchestrator", () => {
       expect(liveMessage!.id).toBe(String((liveMessage!.data as { seq: number }).seq));
 
       expect(events.some((e) => e.event === "task_completed")).toBe(true);
+    });
+
+    it("emits task_failed for an already-failed task", async () => {
+      const runAgentTask = vi.fn().mockResolvedValue({
+        status: "failed",
+        finalMarkdown: "Codex exited with code 1",
+        rawOutputRedacted: "",
+        sessionId: null,
+        workDir: null,
+        taskMessages: [{ type: "error", tool: null, content: "Failure detail", inputJson: null, output: null }]
+      } satisfies RunnerAgentTaskResponse);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const sessionId = await scheduledSession(app, runAgentTask);
+
+      await request(app)
+        .post(`/api/chat-sessions/${sessionId}/messages`)
+        .send({ message: "Go" })
+        .expect(202);
+      await drainPendingTaskExecutions(app);
+
+      const res = await request(app).get(`/api/chat-sessions/${sessionId}/events`).expect(200);
+      const events = parseSseEvents(res.text);
+
+      const terminal = events.find((e) => e.event === "task_failed");
+      expect(terminal).toBeTruthy();
+      expect((terminal!.data as { status: string; error: string }).status).toBe("failed");
+      expect((terminal!.data as { status: string; error: string }).error).toBe("Codex exited with code 1");
+    });
+
+    it("emits task_failed for an already-timed-out task", async () => {
+      const runAgentTask = vi.fn().mockResolvedValue({
+        status: "timed_out",
+        finalMarkdown: "Runner timed out",
+        rawOutputRedacted: "",
+        sessionId: null,
+        workDir: null,
+        taskMessages: [{ type: "error", tool: null, content: "Timeout detail", inputJson: null, output: null }]
+      } satisfies RunnerAgentTaskResponse);
+      const app = createApiApp({ chatStore: store, runAgentTask });
+      const sessionId = await scheduledSession(app, runAgentTask);
+
+      await request(app)
+        .post(`/api/chat-sessions/${sessionId}/messages`)
+        .send({ message: "Go" })
+        .expect(202);
+      await drainPendingTaskExecutions(app);
+
+      const res = await request(app).get(`/api/chat-sessions/${sessionId}/events`).expect(200);
+      const events = parseSseEvents(res.text);
+
+      const terminal = events.find((e) => e.event === "task_failed");
+      expect(terminal).toBeTruthy();
+      expect((terminal!.data as { status: string; error: string }).status).toBe("timed_out");
     });
 
     it("replays only persisted task messages after Last-Event-ID on reconnect", async () => {

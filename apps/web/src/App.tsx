@@ -56,6 +56,14 @@ function activityStatusLabel(status: AgentTask["status"]): string {
   }
 }
 
+function activitySummary(task: AgentTask, eventCount: number): string {
+  const eventLabel = eventCount === 1 ? "event" : "events";
+  if (task.status === "failed" || task.status === "timed_out") {
+    return `${activityStatusLabel(task.status)} · ${eventCount} ${eventLabel}`;
+  }
+  return `Activity · ${activityStatusLabel(task.status)} · ${eventCount} ${eventLabel}`;
+}
+
 function ActivityBlock({ task, taskMessages }: { task: AgentTask; taskMessages: TaskMessage[] }) {
   const isRunning = !isTerminalTaskStatus(task.status);
   const [isOpen, setIsOpen] = useState(isRunning);
@@ -65,11 +73,10 @@ function ActivityBlock({ task, taskMessages }: { task: AgentTask; taskMessages: 
   }, [task.id, isRunning]);
 
   const eventCount = taskMessages.length;
-  const eventLabel = eventCount === 1 ? "event" : "events";
 
   return (
     <details className="trace activity" open={isOpen} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
-      <summary>{`Activity · ${activityStatusLabel(task.status)} · ${eventCount} ${eventLabel}`}</summary>
+      <summary>{activitySummary(task, eventCount)}</summary>
       <div className="activity-events">
         {taskMessages.length > 0 ? (
           taskMessages.map((taskMessage) => (

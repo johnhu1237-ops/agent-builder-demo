@@ -354,6 +354,101 @@ describe("multi-agent UI", () => {
     expect(screen.getByRole("button", { name: /^Send$/ })).not.toBeDisabled();
   });
 
+  it("shows failed historical activity collapsed with a concise assistant failure message", async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (url.endsWith("/api/agents") && method === "GET") {
+        return jsonResponse([agentFixture()]);
+      }
+      if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(agentFixture());
+      }
+      if (url.endsWith("/api/chat-sessions") && method === "GET") {
+        return jsonResponse([sessionFixture()]);
+      }
+      if (/\/api\/chat-sessions\/[^/]+$/.test(url) && method === "GET") {
+        return jsonResponse(
+          sessionDetailFixture({
+            messages: [
+              {
+                id: "msg_1",
+                chatSessionId: "chat_1",
+                role: "user",
+                contentMarkdown: "Please run this",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              },
+              {
+                id: "msg_2",
+                chatSessionId: "chat_1",
+                role: "assistant",
+                contentMarkdown: "Task failed: Codex exited with code 1",
+                taskId: "task_1",
+                createdAt: new Date().toISOString()
+              }
+            ],
+            latestTask: {
+              id: "task_1",
+              chatSessionId: "chat_1",
+              triggerMessageId: "msg_1",
+              agentSpecSnapshot: defaultAgentSpec,
+              status: "failed",
+              sessionId: null,
+              workDir: null,
+              resultMarkdown: null,
+              rawOutputRedacted: "",
+              error: "Codex exited with code 1",
+              createdAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString()
+            },
+            taskMessages: [
+              {
+                id: "tm_1",
+                taskId: "task_1",
+                seq: 0,
+                type: "error",
+                tool: null,
+                content: "Detailed stack trace",
+                inputJson: null,
+                output: null,
+                createdAt: new Date().toISOString()
+              },
+              {
+                id: "tm_2",
+                taskId: "task_1",
+                seq: 1,
+                type: "log",
+                tool: null,
+                content: "Command output",
+                inputJson: null,
+                output: null,
+                createdAt: new Date().toISOString()
+              }
+            ]
+          })
+        );
+      }
+      return jsonResponse(null, 404);
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const chatButton = await screen.findByRole("button", { name: /New Conversation/ });
+    await user.click(chatButton);
+
+    await waitFor(() => {
+      expect(screen.getByText("Task failed: Codex exited with code 1")).toBeInTheDocument();
+    });
+
+    const activity = screen.getByText("Failed · 2 events").closest("details");
+    expect(activity).toBeInTheDocument();
+    expect(activity).not.toHaveAttribute("open");
+  });
+
   it("surfaces a clear error when the API rejects a send with a 409 conflict", async () => {
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
       const method = options?.method ?? "GET";
