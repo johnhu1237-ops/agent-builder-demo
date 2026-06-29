@@ -83,6 +83,6 @@ export async function sendChatMessage(input: {
   });
 }
 
-export function createTaskEventSource(chatSessionId: string): EventSource {
-  return new EventSource(`${BASE_URL}/api/chat-sessions/${encodeURIComponent(chatSessionId)}/events`);
+export function createTaskEventSource(eventsUrl: string): EventSource {
+  return new EventSource(new URL(eventsUrl, BASE_URL).toString());
 }

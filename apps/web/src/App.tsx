@@ -332,7 +332,7 @@ export default function App() {
         return;
       }
 
-      const source = createTaskEventSource(sessionId);
+      const source = createTaskEventSource(scheduled.eventsUrl);
       eventSourceRef.current = source;
       let receivedUsableSseEvent = false;
       let sseFailureCount = 0;
