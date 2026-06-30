@@ -270,6 +270,69 @@ describe("API orchestrator", () => {
     });
   });
 
+  it("uses the configured Arcade user id for GitHub Connected App Authorization", async () => {
+    const originalArcadeUserId = process.env.ARCADE_USER_ID;
+    process.env.ARCADE_USER_ID = "arcade-project-user-1";
+    try {
+      const connectedAppAuthorizationClient = {
+        authorize: vi.fn().mockResolvedValue({ authorizationUrl: "https://arcade.dev/authorize/github/demo" }),
+        isAuthorized: vi.fn()
+      };
+      const app = createApiApp({ chatStore: store, connectedAppAuthorizationClient });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+      const returnUrl = `http://localhost:5173/oauth/arcade/github/callback?agentId=${agent.id}`;
+
+      const authorizeResponse = await request(app)
+        .post(`/api/agents/${agent.id}/connected-apps/github/authorize`)
+        .send({ returnUrl })
+        .expect(202);
+
+      expect(connectedAppAuthorizationClient.authorize).toHaveBeenCalledWith({
+        provider: "github",
+        userId: "arcade-project-user-1",
+        toolName: "Github.ListIssues",
+        returnUrl
+      });
+      expect(authorizeResponse.body.arcadeUserId).toBe("arcade-project-user-1");
+    } finally {
+      if (originalArcadeUserId === undefined) delete process.env.ARCADE_USER_ID;
+      else process.env.ARCADE_USER_ID = originalArcadeUserId;
+    }
+  });
+
+  it("uses the configured Arcade user id when completing GitHub Connected App Authorization", async () => {
+    const originalArcadeUserId = process.env.ARCADE_USER_ID;
+    process.env.ARCADE_USER_ID = "arcade-project-user-1";
+    try {
+      const connectedAppAuthorizationClient = {
+        authorize: vi.fn(),
+        isAuthorized: vi.fn().mockResolvedValue(true)
+      };
+      const app = createApiApp({ chatStore: store, connectedAppAuthorizationClient });
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+
+      const completeResponse = await request(app)
+        .post(`/api/agents/${agent.id}/connected-apps/github/complete`)
+        .send({})
+        .expect(201);
+
+      expect(connectedAppAuthorizationClient.isAuthorized).toHaveBeenCalledWith({
+        provider: "github",
+        userId: "arcade-project-user-1",
+        toolName: "Github.ListIssues"
+      });
+      expect(completeResponse.body.connectedAccount).toEqual(
+        expect.objectContaining({
+          accountLabel: "GitHub via Arcade",
+          externalAccountId: "arcade-project-user-1"
+        })
+      );
+    } finally {
+      if (originalArcadeUserId === undefined) delete process.env.ARCADE_USER_ID;
+      else process.env.ARCADE_USER_ID = originalArcadeUserId;
+    }
+  });
+
   it("marks failed Tool Configuration syncs and recovers on a later successful update", async () => {
     const arcadeToolConfigurationSyncer = {
       syncToolConfiguration: vi
