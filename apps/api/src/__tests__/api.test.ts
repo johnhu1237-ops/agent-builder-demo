@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultAgentSpec, type Agent, type RunnerAgentTaskResponse } from "@agent-builder/shared";
 import { runChatMigrations } from "../chat-migrations";
 import { PgChatStore } from "../chat-store";
-import { createApiApp } from "../index";
+import { createApiApp, type ApiDependencies } from "../index";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -147,6 +147,11 @@ describe("API orchestrator", () => {
       expect.objectContaining({
         appId: "mock-github",
         toolName: "github_create_issue",
+        mode: "ask_each_time"
+      }),
+      expect.objectContaining({
+        appId: "mock-github",
+        toolName: "github_search_issues",
         mode: "ask_each_time"
       })
     ]);
@@ -293,12 +298,16 @@ describe("API orchestrator", () => {
           externalAccountId: "github-user-1",
           status: "connected"
         }),
-        tools: [
+        tools: expect.arrayContaining([
           expect.objectContaining({
             toolName: "github_create_issue",
             mode: "ask_each_time"
+          }),
+          expect.objectContaining({
+            toolName: "github_search_issues",
+            mode: "ask_each_time"
           })
-        ]
+        ])
       })
     );
 
@@ -315,13 +324,17 @@ describe("API orchestrator", () => {
     expect(connectedResponse.body[0]).toEqual(
       expect.objectContaining({
         status: "connected",
-        tools: [
+        tools: expect.arrayContaining([
           expect.objectContaining({
             id: toolConfigurationId,
             toolName: "github_create_issue",
             mode: "auto"
+          }),
+          expect.objectContaining({
+            toolName: "github_search_issues",
+            mode: "ask_each_time"
           })
-        ]
+        ])
       })
     );
   });
@@ -759,6 +772,17 @@ describe("API orchestrator", () => {
               },
               required: ["title"]
             }
+          },
+          {
+            name: "github_search_issues",
+            description: "Search GitHub issues through the product MCP gateway.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                query: { type: "string" }
+              },
+              required: ["query"]
+            }
           }
         ]
       }
@@ -778,10 +802,184 @@ describe("API orchestrator", () => {
       .send({ jsonrpc: "2.0", id: 3, method: "tools/list" })
       .expect(200);
 
-    expect(disabledResponse.body.result.tools).toEqual([]);
+    expect(disabledResponse.body.result.tools).toEqual([
+      {
+        name: "github_search_issues",
+        description: "Search GitHub issues through the product MCP gateway.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" }
+          },
+          required: ["query"]
+        }
+      }
+    ]);
 
     deferred.resolve(completedRunnerResult);
     await drainPendingTaskExecutions(app);
+  });
+
+  it("verifies a Codex Agent Task can use the product MCP gateway end to end", async () => {
+    const externalToolExecutor = {
+      executeTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "Search found issue #42" }]
+      })
+    };
+    let app: import("express").Express;
+    const runAgentTask = vi.fn(async (runnerRequest: Parameters<NonNullable<ApiDependencies["runAgentTask"]>>[0]) => {
+      const toolsResponse = await request(app)
+        .post("/mcp/agent-task")
+        .set("authorization", `Bearer ${runnerRequest.agentTaskLeaseToken}`)
+        .send({ jsonrpc: "2.0", id: 21, method: "tools/list" })
+        .expect(200);
+
+      expect(toolsResponse.body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+        "github_create_issue",
+        "github_search_issues"
+      ]);
+
+      await request(app)
+        .post("/mcp/agent-task")
+        .set("authorization", `Bearer ${runnerRequest.agentTaskLeaseToken}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 22,
+          method: "tools/call",
+          params: {
+            name: "github_search_issues",
+            arguments: { query: "repo:acme/widgets gateway" }
+          }
+        })
+        .expect(200);
+
+      const deniedCall = request(app)
+        .post("/mcp/agent-task")
+        .set("authorization", `Bearer ${runnerRequest.agentTaskLeaseToken}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 23,
+          method: "tools/call",
+          params: {
+            name: "github_create_issue",
+            arguments: { title: "Denied issue", body: "Do not create" }
+          }
+        })
+        .then((response) => response);
+      const deniedConfirmation = await waitForPendingConfirmation(pool);
+
+      const activityDuringConfirmation = await request(app)
+        .get(`/api/chat-sessions/${runnerRequest.chatSessionId}`)
+        .expect(200);
+      expect(activityDuringConfirmation.body.pendingToolConfirmations).toEqual([
+        expect.objectContaining({
+          id: deniedConfirmation.id,
+          mcpToolName: "github_create_issue",
+          status: "pending"
+        })
+      ]);
+
+      await request(app).post(`/api/tool-confirmations/${deniedConfirmation.id}/deny`).expect(200);
+      const deniedResponse = await deniedCall;
+      expect(deniedResponse.body.result).toEqual({
+        isError: true,
+        content: [{ type: "text", text: "Tool call denied by user." }]
+      });
+
+      const expiredResponse = await request(app)
+        .post("/mcp/agent-task")
+        .set("authorization", `Bearer ${runnerRequest.agentTaskLeaseToken}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 24,
+          method: "tools/call",
+          params: {
+            name: "github_create_issue",
+            arguments: { title: "Expired issue", body: "Do not create either" }
+          }
+        })
+        .expect(200);
+      expect(expiredResponse.body.result).toEqual({
+        isError: true,
+        content: [{ type: "text", text: "Tool confirmation timed out." }]
+      });
+
+      return {
+        status: "completed",
+        finalMarkdown: "Gateway verification completed",
+        rawOutputRedacted: "",
+        sessionId: "codex-session-gateway",
+        workDir: "sandbox-gateway",
+        taskMessages: [
+          { type: "status", tool: "mcp", content: "Listed product MCP gateway tools", inputJson: null, output: null },
+          { type: "tool_use", tool: "github_search_issues", content: "Called auto GitHub search", inputJson: null, output: null },
+          { type: "status", tool: "mcp", content: "Observed denied and expired Tool Confirmations", inputJson: null, output: null }
+        ]
+      } satisfies RunnerAgentTaskResponse;
+    });
+    app = createApiApp({
+      chatStore: store,
+      runAgentTask,
+      externalToolExecutor,
+      toolConfirmationTimeoutMs: 100
+    });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const toolConfigurations = await store.listToolConfigurationsForAgent(agent.id);
+    const searchToolConfiguration = toolConfigurations.find((tool) => tool.toolName === "github_search_issues");
+    expect(searchToolConfiguration).toBeDefined();
+    await store.updateToolConfigurationMode({
+      agentId: agent.id,
+      toolConfigurationId: searchToolConfiguration!.id,
+      mode: "auto"
+    });
+
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "Gateway verification" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Verify the product MCP gateway from Codex." })
+      .expect(202);
+    await drainPendingTaskExecutions(app);
+
+    expect(externalToolExecutor.executeTool).toHaveBeenCalledTimes(1);
+    expect(externalToolExecutor.executeTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcpToolName: "github_search_issues",
+        args: { query: "repo:acme/widgets gateway" }
+      })
+    );
+
+    const auditRows = await pool.query<{ mcp_tool_name: string; status: string; mode: string | null }>(
+      `select mcp_tool_name, status, mode from tool_call_audit_logs order by created_at asc`
+    );
+    expect(auditRows.rows).toEqual([
+      { mcp_tool_name: "github_search_issues", status: "executed", mode: "auto" },
+      { mcp_tool_name: "github_create_issue", status: "confirmation_required", mode: "ask_each_time" },
+      { mcp_tool_name: "github_create_issue", status: "denied", mode: "ask_each_time" },
+      { mcp_tool_name: "github_create_issue", status: "confirmation_required", mode: "ask_each_time" },
+      { mcp_tool_name: "github_create_issue", status: "timed_out", mode: "ask_each_time" }
+    ]);
+
+    const detailResponse = await request(app)
+      .get(`/api/chat-sessions/${sessionResponse.body.id}`)
+      .expect(200);
+    expect(detailResponse.body.latestTask.status).toBe("completed");
+    expect(detailResponse.body.taskMessages).toEqual([
+      expect.objectContaining({ type: "status", tool: "mcp", content: "Listed product MCP gateway tools" }),
+      expect.objectContaining({ type: "tool_use", tool: "github_search_issues", content: "Called auto GitHub search" }),
+      expect.objectContaining({ type: "status", tool: "mcp", content: "Observed denied and expired Tool Confirmations" })
+    ]);
   });
 
   it("executes auto-mode MCP tools/call through the external tool executor and records redacted audit", async () => {

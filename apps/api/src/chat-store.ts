@@ -226,7 +226,7 @@ export type CreateToolConfirmationInput = {
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
 const toolConfigurationModes = new Set<ToolConfigurationMode>(["auto", "ask_each_time", "disabled"]);
 const seededConnectorTools: Record<string, string[]> = {
-  "mock-github": ["github_create_issue"],
+  "mock-github": ["github_search_issues", "github_create_issue"],
   "mock-slack": ["slack_post_message"],
   "mock-notion": ["notion_create_page"]
 };
