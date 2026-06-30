@@ -735,12 +735,45 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
     `
   );
 
+  await createTableIfNeeded(
+    db,
+    "tool_confirmations",
+    `
+      create table if not exists tool_confirmations (
+        id text primary key,
+        agent_task_id text not null references agent_tasks(id) on delete cascade,
+        chat_session_id text not null references chat_session(id) on delete cascade,
+        agent_id text not null references agents(id) on delete cascade,
+        connected_account_id text not null references connected_accounts(id) on delete cascade,
+        provider text not null,
+        mcp_tool_name text not null,
+        provider_tool_name text not null,
+        args_hash text not null,
+        args_encrypted text,
+        preview_json jsonb not null default '{}'::jsonb,
+        status text not null check (status in ('pending', 'approved', 'denied', 'expired', 'revoked')),
+        expires_at timestamptz not null,
+        resolved_at timestamptz,
+        created_at timestamptz not null default now()
+      )
+    `
+  );
+
   await createNonUniqueIndexIfNeeded(
     db,
     "idx_agent_task_leases_agent_task_id",
     `
       create index if not exists idx_agent_task_leases_agent_task_id
       on agent_task_leases(agent_task_id)
+    `
+  );
+
+  await createNonUniqueIndexIfNeeded(
+    db,
+    "idx_tool_confirmations_chat_session_status",
+    `
+      create index if not exists idx_tool_confirmations_chat_session_status
+      on tool_confirmations(chat_session_id, status)
     `
   );
 

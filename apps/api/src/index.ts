@@ -14,6 +14,7 @@ import {
   type TaskMessageEvent,
   type TaskSnapshotEvent,
   type TaskTerminalEvent,
+  type ToolConfirmation,
   type UpdateAgentRequest
 } from "@agent-builder/shared";
 import { agentTaskMcpGatewayEndpoint, getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
@@ -28,6 +29,7 @@ import { ArcadeApiToolExecutor, type ExternalToolExecutor } from "./external-too
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
   externalToolExecutor?: ExternalToolExecutor;
+  toolConfirmationTimeoutMs?: number;
 };
 
 function publicAgentSpec(spec: AgentSpec): AgentSpec {
@@ -57,6 +59,13 @@ function jsonRpcResult(id: unknown, result: unknown) {
 
 function jsonRpcError(id: unknown, code: number, message: string) {
   return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+}
+
+function mcpToolNonSuccessResult(message: string) {
+  return {
+    isError: true,
+    content: [{ type: "text", text: message }]
+  };
 }
 
 function mcpToolCallParams(body: unknown): { name: string; args: unknown } | null {
@@ -248,16 +257,19 @@ async function executeAgentTask(params: {
 
 export function createApiApp(deps: ApiDependencies = {}) {
   const app = express();
-  const chatStore = deps.chatStore;
-  if (!chatStore) {
+  const maybeChatStore = deps.chatStore;
+  if (!maybeChatStore) {
     throw new Error("createApiApp requires a PgChatStore. Use createProductionApiApp for process startup.");
   }
+  const chatStore: PgChatStore = maybeChatStore;
   const runnerClient: RunnerClient = {
     runAgentTask:
       deps.runAgentTask ??
       createHttpRunnerClient(process.env.RUNNER_BASE_URL ?? "http://localhost:4101").runAgentTask
   };
   const externalToolExecutor = deps.externalToolExecutor ?? new ArcadeApiToolExecutor();
+  const toolConfirmationTimeoutMs = deps.toolConfirmationTimeoutMs ?? 3 * 60 * 1000;
+  const toolConfirmationWaiters = new Map<string, (confirmation: ToolConfirmation) => void>();
 
   const pendingTaskExecutions = new Set<Promise<void>>();
   app.locals.pendingTaskExecutions = pendingTaskExecutions;
@@ -269,6 +281,42 @@ export function createApiApp(deps: ApiDependencies = {}) {
 
   app.use(cors());
   app.use(express.json({ limit: "1mb" }));
+
+  async function resolveToolConfirmationAndNotify(
+    confirmationId: string,
+    status: "approved" | "denied" | "expired" | "revoked",
+    expectedArgsHash?: string
+  ) {
+    const result = await chatStore.resolveToolConfirmation(confirmationId, { status, expectedArgsHash });
+    if (result.status !== "resolved") {
+      return result;
+    }
+
+    taskEvents.publish(result.confirmation.chatSessionId, {
+      type: "tool_confirmation_resolved",
+      payload: { confirmation: result.confirmation }
+    });
+    toolConfirmationWaiters.get(result.confirmation.id)?.(result.confirmation);
+    toolConfirmationWaiters.delete(result.confirmation.id);
+    return result;
+  }
+
+  function waitForToolConfirmation(confirmation: ToolConfirmation): Promise<ToolConfirmation> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        void resolveToolConfirmationAndNotify(confirmation.id, "expired", confirmation.argsHash).then((result) => {
+          if (result.status === "resolved") {
+            resolve(result.confirmation);
+          }
+        });
+      }, toolConfirmationTimeoutMs);
+
+      toolConfirmationWaiters.set(confirmation.id, (resolvedConfirmation) => {
+        clearTimeout(timer);
+        resolve(resolvedConfirmation);
+      });
+    });
+  }
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });
@@ -373,6 +421,41 @@ export function createApiApp(deps: ApiDependencies = {}) {
       const message = error instanceof Error ? error.message : "Update failed";
       res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
     }
+  });
+
+  app.post("/api/tool-confirmations/:id/approve", async (req, res) => {
+    const expectedArgsHash = typeof req.body?.expectedArgsHash === "string" ? req.body.expectedArgsHash : undefined;
+    const result = await resolveToolConfirmationAndNotify(req.params.id, "approved", expectedArgsHash);
+    if (result.status === "not_found") {
+      res.status(404).json(stableError("Tool Confirmation not found"));
+      return;
+    }
+    if (result.status === "args_mismatch") {
+      res.status(409).json(stableError("Tool Confirmation arguments do not match"));
+      return;
+    }
+    if (result.status === "not_pending") {
+      res.status(409).json(stableError(`Tool Confirmation is already ${result.confirmation.status}`));
+      return;
+    }
+    res.json(result.confirmation);
+  });
+
+  app.post("/api/tool-confirmations/:id/deny", async (req, res) => {
+    const result = await resolveToolConfirmationAndNotify(req.params.id, "denied");
+    if (result.status === "not_found") {
+      res.status(404).json(stableError("Tool Confirmation not found"));
+      return;
+    }
+    if (result.status === "args_mismatch") {
+      res.status(409).json(stableError("Tool Confirmation arguments do not match"));
+      return;
+    }
+    if (result.status === "not_pending") {
+      res.status(409).json(stableError(`Tool Confirmation is already ${result.confirmation.status}`));
+      return;
+    }
+    res.json(result.confirmation);
   });
 
   app.post("/api/chat-sessions", async (req, res) => {
@@ -536,7 +619,12 @@ export function createApiApp(deps: ApiDependencies = {}) {
         ? detail.taskMessages
         : detail.taskMessages.filter((message) => message.seq > lastSeenSeq);
 
-    const snapshot: TaskSnapshotEvent = { task: detail.latestTask, taskMessages: replayTaskMessages };
+    const pendingToolConfirmations = await chatStore.listPendingToolConfirmationsForChatSession(detail.id);
+    const snapshot: TaskSnapshotEvent = {
+      task: detail.latestTask,
+      taskMessages: replayTaskMessages,
+      pendingToolConfirmations
+    };
     sendSse(res, "task_snapshot", snapshot);
 
     for (const msg of replayTaskMessages) {
@@ -559,6 +647,10 @@ export function createApiApp(deps: ApiDependencies = {}) {
     const unsubscribe = taskEvents.subscribe(detail.id, (event) => {
       if (event.type === "task_message") {
         sendSse(res, "task_message", event.payload, String(event.payload.seq));
+      } else if (event.type === "tool_confirmation_pending") {
+        sendSse(res, "tool_confirmation_pending", event.payload);
+      } else if (event.type === "tool_confirmation_resolved") {
+        sendSse(res, "tool_confirmation_resolved", event.payload);
       } else if (event.type === "terminal") {
         sendSse(res, terminalSseEventName(event.payload.status), event.payload);
         unsubscribe();
@@ -629,7 +721,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
         return;
       }
 
-      if (toolConfiguration.mode !== "auto") {
+      if (toolConfiguration.mode === "disabled") {
         await chatStore.recordToolCallAudit({
           agentTaskId: lease.agentTaskId,
           chatSessionId: lease.chatSessionId,
@@ -640,22 +732,91 @@ export function createApiApp(deps: ApiDependencies = {}) {
           providerToolName: toolConfiguration.toolName,
           mode: toolConfiguration.mode,
           args: toolCall.args,
-          status: toolConfiguration.mode === "ask_each_time" ? "confirmation_required" : "denied",
-          error:
-            toolConfiguration.mode === "ask_each_time"
-              ? "Tool confirmation is required"
-              : "Tool is disabled for this Agent"
+          status: "denied",
+          error: "Tool is disabled for this Agent"
         });
-        res.json(
-          jsonRpcError(
-            id,
-            -32602,
-            toolConfiguration.mode === "ask_each_time"
-              ? "Tool confirmation is required"
-              : "Tool is disabled for this Agent"
-          )
-        );
+        res.json(jsonRpcError(id, -32602, "Tool is disabled for this Agent"));
         return;
+      }
+
+      if (toolConfiguration.mode === "ask_each_time") {
+        await chatStore.recordToolCallAudit({
+          agentTaskId: lease.agentTaskId,
+          chatSessionId: lease.chatSessionId,
+          agentId: lease.agentId,
+          connectedAccountId: toolConfiguration.connectedAccountId,
+          provider: toolConfiguration.appId,
+          mcpToolName: toolCall.name,
+          providerToolName: toolConfiguration.toolName,
+          mode: toolConfiguration.mode,
+          args: toolCall.args,
+          status: "confirmation_required",
+          error: "Tool confirmation is required"
+        });
+        const confirmation = await chatStore.createToolConfirmation({
+          agentTaskId: lease.agentTaskId,
+          chatSessionId: lease.chatSessionId,
+          agentId: lease.agentId,
+          connectedAccountId: toolConfiguration.connectedAccountId,
+          provider: toolConfiguration.appId,
+          mcpToolName: toolCall.name,
+          providerToolName: toolConfiguration.toolName,
+          args: toolCall.args,
+          expiresAt: new Date(Date.now() + toolConfirmationTimeoutMs)
+        });
+        taskEvents.publish(lease.chatSessionId, {
+          type: "tool_confirmation_pending",
+          payload: { confirmation }
+        });
+
+        const resolvedConfirmation = await waitForToolConfirmation(confirmation);
+        if (resolvedConfirmation.status !== "approved") {
+          await chatStore.recordToolCallAudit({
+            agentTaskId: lease.agentTaskId,
+            chatSessionId: lease.chatSessionId,
+            agentId: lease.agentId,
+            connectedAccountId: toolConfiguration.connectedAccountId,
+            provider: toolConfiguration.appId,
+            mcpToolName: toolCall.name,
+            providerToolName: toolConfiguration.toolName,
+            mode: toolConfiguration.mode,
+            args: toolCall.args,
+            status: resolvedConfirmation.status === "expired" ? "timed_out" : "denied",
+            error:
+              resolvedConfirmation.status === "expired"
+                ? "Tool confirmation timed out"
+                : "Tool call denied by user"
+          });
+          res.json(
+            jsonRpcResult(
+              id,
+              mcpToolNonSuccessResult(
+                resolvedConfirmation.status === "expired"
+                  ? "Tool confirmation timed out."
+                  : "Tool call denied by user."
+              )
+            )
+          );
+          return;
+        }
+
+        if (resolvedConfirmation.argsHash !== confirmation.argsHash) {
+          await chatStore.recordToolCallAudit({
+            agentTaskId: lease.agentTaskId,
+            chatSessionId: lease.chatSessionId,
+            agentId: lease.agentId,
+            connectedAccountId: toolConfiguration.connectedAccountId,
+            provider: toolConfiguration.appId,
+            mcpToolName: toolCall.name,
+            providerToolName: toolConfiguration.toolName,
+            mode: toolConfiguration.mode,
+            args: toolCall.args,
+            status: "denied",
+            error: "Tool confirmation arguments do not match"
+          });
+          res.json(jsonRpcResult(id, mcpToolNonSuccessResult("Tool confirmation arguments do not match.")));
+          return;
+        }
       }
 
       try {

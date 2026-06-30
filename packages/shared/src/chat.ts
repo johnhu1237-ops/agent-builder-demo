@@ -60,6 +60,7 @@ export type ChatSessionDetail = ChatSession & {
   messages: ChatMessage[];
   latestTask: AgentTask | null;
   taskMessages: TaskMessage[];
+  pendingToolConfirmations?: ToolConfirmation[];
 };
 
 export type CreateChatSessionRequest = {
@@ -81,6 +82,7 @@ export type ScheduleChatMessageResponse = {
 export type TaskSnapshotEvent = {
   task: AgentTask | null;
   taskMessages: TaskMessage[];
+  pendingToolConfirmations?: ToolConfirmation[];
 };
 
 export type TaskMessageEvent = {
@@ -93,6 +95,29 @@ export type TaskTerminalEvent = {
   taskId: string;
   status: Extract<AgentTaskStatus, "completed" | "failed" | "timed_out" | "cancelled">;
   error?: string | null;
+};
+
+export type ToolConfirmationStatus = "pending" | "approved" | "denied" | "expired" | "revoked";
+
+export type ToolConfirmation = {
+  id: string;
+  agentTaskId: string;
+  chatSessionId: string;
+  agentId: string;
+  connectedAccountId: string;
+  provider: string;
+  mcpToolName: string;
+  providerToolName: string;
+  argsHash: string;
+  previewJson: unknown;
+  status: ToolConfirmationStatus;
+  expiresAt: string;
+  resolvedAt: string | null;
+  createdAt: string;
+};
+
+export type ToolConfirmationEvent = {
+  confirmation: ToolConfirmation;
 };
 
 export type RunnerEventsTarget = {

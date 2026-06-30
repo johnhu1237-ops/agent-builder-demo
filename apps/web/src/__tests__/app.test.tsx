@@ -662,6 +662,62 @@ describe("multi-agent UI", () => {
     expect(source.readyState).toBe(2);
   });
 
+  it("shows pending and resolved tool confirmations from SSE", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    const agentButton = await screen.findByRole("button", { name: /Research Agent/ });
+    await user.click(agentButton);
+    const newChatBtn = await screen.findByRole("button", { name: /\+ New chat/ });
+    await user.click(newChatBtn);
+
+    const textarea = await screen.findByLabelText("Message");
+    await user.clear(textarea);
+    await user.type(textarea, "Create an issue");
+    await user.click(screen.getByRole("button", { name: /^Send$/ }));
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+
+    const source = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+    const confirmation = {
+      id: "confirmation_1",
+      agentTaskId: "task_1",
+      chatSessionId: "chat_1",
+      agentId: "agent_1",
+      connectedAccountId: "connected_account_1",
+      provider: "mock-github",
+      mcpToolName: "github_create_issue",
+      providerToolName: "github_create_issue",
+      argsHash: "hash_1",
+      previewJson: { title: "Ship gateway" },
+      status: "pending",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      resolvedAt: null,
+      createdAt: new Date().toISOString()
+    };
+
+    act(() => {
+      source.emit("tool_confirmation_pending", { confirmation });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("github_create_issue needs approval")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Pending")).toBeInTheDocument();
+
+    act(() => {
+      source.emit("tool_confirmation_resolved", {
+        confirmation: { ...confirmation, status: "approved", resolvedAt: new Date().toISOString() }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Approved")).toBeInTheDocument();
+    });
+  });
+
   it("opens the SSE connection from the scheduled response eventsUrl", async () => {
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
       const method = options?.method ?? "GET";

@@ -26,6 +26,20 @@ async function drainPendingTaskExecutions(app: import("express").Express): Promi
   await Promise.all([...((app.locals.pendingTaskExecutions as Set<Promise<void>>) ?? [])]);
 }
 
+async function waitForPendingConfirmation(pool: import("pg").Pool): Promise<{ id: string; args_hash: string }> {
+  const deadline = Date.now() + 500;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ id: string; args_hash: string }>(
+      `select id, args_hash from tool_confirmations where status = 'pending' limit 1`
+    );
+    if (result.rows[0]) {
+      return result.rows[0];
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for pending tool confirmation");
+}
+
 const completedRunnerResult: RunnerAgentTaskResponse = {
   status: "completed",
   finalMarkdown: "Done",
@@ -785,7 +799,7 @@ describe("API orchestrator", () => {
     await drainPendingTaskExecutions(app);
   });
 
-  it("rejects unknown and confirmation-required MCP tools/call before execution", async () => {
+  it("rejects unknown MCP tools/call before execution", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
     const externalToolExecutor = {
@@ -829,22 +843,6 @@ describe("API orchestrator", () => {
       error: { code: -32602, message: "Tool is not available to this Agent Task" }
     });
 
-    const confirmationRequiredResponse = await request(app)
-      .post("/mcp/agent-task")
-      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
-      .send({
-        jsonrpc: "2.0",
-        id: 8,
-        method: "tools/call",
-        params: { name: "github_create_issue", arguments: { title: "Needs approval" } }
-      })
-      .expect(200);
-
-    expect(confirmationRequiredResponse.body).toEqual({
-      jsonrpc: "2.0",
-      id: 8,
-      error: { code: -32602, message: "Tool confirmation is required" }
-    });
     expect(externalToolExecutor.executeTool).not.toHaveBeenCalled();
 
     const auditRows = await pool.query<{ mcp_tool_name: string; status: string; mode: string | null; args_redacted: unknown }>(
@@ -856,17 +854,221 @@ describe("API orchestrator", () => {
         status: "denied",
         mode: null,
         args_redacted: { token: "[REDACTED]" }
-      },
-      {
-        mcp_tool_name: "github_create_issue",
-        status: "confirmation_required",
-        mode: "ask_each_time",
-        args_redacted: { title: "Needs approval" }
       }
     ]);
 
     deferred.resolve(completedRunnerResult);
     await drainPendingTaskExecutions(app);
+  });
+
+  it("creates a pending confirmation for ask-each-time calls and executes the original args after approval", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const externalToolExecutor = {
+      executeTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "Created issue after approval" }]
+      })
+    };
+    const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP approved call" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Create an issue after asking." })
+      .expect(202);
+
+    const call = runAgentTask.mock.calls[0]![0];
+    const mcpCallPromise = request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: {
+          name: "github_create_issue",
+          arguments: { title: "Needs approval", body: "Use token sk-live-secret-value" }
+        }
+      })
+      .then((response) => response);
+
+    const confirmation = await waitForPendingConfirmation(pool);
+    const approveResponse = await request(app)
+      .post(`/api/tool-confirmations/${confirmation.id}/approve`)
+      .expect(200);
+
+    expect(approveResponse.body).toEqual(expect.objectContaining({ id: confirmation.id, status: "approved" }));
+
+    const mcpResponse = await mcpCallPromise;
+    expect(mcpResponse.status).toBe(200);
+    expect(mcpResponse.body).toEqual({
+      jsonrpc: "2.0",
+      id: 8,
+      result: {
+        content: [{ type: "text", text: "Created issue after approval" }]
+      }
+    });
+    expect(externalToolExecutor.executeTool).toHaveBeenCalledWith({
+      arcadeUserId: "github-user-1",
+      provider: "mock-github",
+      mcpToolName: "github_create_issue",
+      providerToolName: "github_create_issue",
+      args: { title: "Needs approval", body: "Use token sk-live-secret-value" }
+    });
+
+    const rows = await pool.query<{
+      status: string;
+      args_redacted: unknown;
+      confirmation_status: string;
+      args_hash: string;
+    }>(`
+      select a.status, a.args_redacted, c.status as confirmation_status, c.args_hash
+      from tool_call_audit_logs a
+      join tool_confirmations c on c.agent_task_id = a.agent_task_id
+    `);
+    expect(rows.rows).toEqual([
+      {
+        status: "confirmation_required",
+        args_redacted: { title: "Needs approval", body: "Use token [REDACTED]" },
+        confirmation_status: "approved",
+        args_hash: confirmation.args_hash
+      },
+      {
+        status: "executed",
+        args_redacted: { title: "Needs approval", body: "Use token [REDACTED]" },
+        confirmation_status: "approved",
+        args_hash: confirmation.args_hash
+      }
+    ]);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
+  it("returns non-success MCP results for denied, timed-out, and mismatched confirmations", async () => {
+    const deniedDeferred = createDeferred<RunnerAgentTaskResponse>();
+    const deniedRun = vi.fn().mockReturnValue(deniedDeferred.promise);
+    const deniedExecutor = { executeTool: vi.fn() };
+    const deniedApp = createApiApp({ chatStore: store, runAgentTask: deniedRun, externalToolExecutor: deniedExecutor });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const sessionResponse = await request(deniedApp)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP denied call" })
+      .expect(201);
+    await request(deniedApp)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Create an issue." })
+      .expect(202);
+
+    const deniedCall = deniedRun.mock.calls[0]![0];
+    const deniedMcpCallPromise = request(deniedApp)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${deniedCall.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "tools/call",
+        params: { name: "github_create_issue", arguments: { title: "Denied" } }
+      })
+      .then((response) => response);
+    const deniedConfirmation = await waitForPendingConfirmation(pool);
+    await request(deniedApp).post(`/api/tool-confirmations/${deniedConfirmation.id}/deny`).expect(200);
+    const deniedResponse = await deniedMcpCallPromise;
+    expect(deniedResponse.status).toBe(200);
+    expect(deniedResponse.body).toEqual({
+      jsonrpc: "2.0",
+      id: 9,
+      result: {
+        isError: true,
+        content: [{ type: "text", text: "Tool call denied by user." }]
+      }
+    });
+    expect(deniedExecutor.executeTool).not.toHaveBeenCalled();
+
+    const timeoutDeferred = createDeferred<RunnerAgentTaskResponse>();
+    const timeoutRun = vi.fn().mockReturnValue(timeoutDeferred.promise);
+    const timeoutExecutor = { executeTool: vi.fn() };
+    const timeoutApp = createApiApp({
+      chatStore: store,
+      runAgentTask: timeoutRun,
+      externalToolExecutor: timeoutExecutor,
+      toolConfirmationTimeoutMs: 10
+    });
+    const timeoutSessionResponse = await request(timeoutApp)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP timed out call" })
+      .expect(201);
+    await request(timeoutApp)
+      .post(`/api/chat-sessions/${timeoutSessionResponse.body.id}/messages`)
+      .send({ message: "Create an issue." })
+      .expect(202);
+    const timeoutCall = timeoutRun.mock.calls[0]![0];
+    const timeoutResponse = await request(timeoutApp)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${timeoutCall.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: { name: "github_create_issue", arguments: { title: "Timeout" } }
+      })
+      .expect(200);
+    expect(timeoutResponse.body).toEqual({
+      jsonrpc: "2.0",
+      id: 10,
+      result: {
+        isError: true,
+        content: [{ type: "text", text: "Tool confirmation timed out." }]
+      }
+    });
+    expect(timeoutExecutor.executeTool).not.toHaveBeenCalled();
+
+    const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+    const mismatchConfirmation = await store.createToolConfirmation({
+      agentTaskId: deniedCall.taskId,
+      chatSessionId: sessionResponse.body.id,
+      agentId: agent.id,
+      connectedAccountId: toolConfiguration.connectedAccountId,
+      provider: "mock-github",
+      mcpToolName: "github_create_issue",
+      providerToolName: "github_create_issue",
+      args: { title: "Original" },
+      expiresAt: new Date(Date.now() + 60 * 1000)
+    });
+    const mismatchResult = await store.resolveToolConfirmation(mismatchConfirmation.id, {
+      status: "approved",
+      expectedArgsHash: "different-hash"
+    });
+    expect(mismatchResult).toEqual({ status: "args_mismatch" });
+
+    const timeoutResult = await store.expirePendingToolConfirmations(new Date(Date.now() + 10 * 60 * 1000));
+    expect(timeoutResult).toBeGreaterThanOrEqual(0);
+
+    deniedDeferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(deniedApp);
+    timeoutDeferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(timeoutApp);
   });
 
   it("returns MCP-friendly errors and failed audit records when auto tool execution fails", async () => {

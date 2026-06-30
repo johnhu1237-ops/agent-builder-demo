@@ -1,7 +1,9 @@
-import type { TaskMessageEvent, TaskTerminalEvent } from "@agent-builder/shared";
+import type { TaskMessageEvent, TaskTerminalEvent, ToolConfirmationEvent } from "@agent-builder/shared";
 
 export type TaskBroadcast =
   | { type: "task_message"; payload: TaskMessageEvent }
+  | { type: "tool_confirmation_pending"; payload: ToolConfirmationEvent }
+  | { type: "tool_confirmation_resolved"; payload: ToolConfirmationEvent }
   | { type: "terminal"; payload: TaskTerminalEvent };
 
 type Subscriber = (event: TaskBroadcast) => void;
