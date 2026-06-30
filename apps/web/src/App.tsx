@@ -14,7 +14,9 @@ import {
   type TaskMessage,
   type TaskMessageEvent,
   type TaskSnapshotEvent,
-  type TaskTerminalEvent
+  type TaskTerminalEvent,
+  type ToolConfirmation,
+  type ToolConfirmationEvent
 } from "@agent-builder/shared";
 import { createExportPayload } from "./defaults";
 import { formatRelativeTime } from "./relative-time";
@@ -30,6 +32,8 @@ import {
   getChatSession,
   sendChatMessage,
   createTaskEventSource,
+  approveToolConfirmation,
+  denyToolConfirmation,
   type ToolConfiguration,
   type ToolConfigurationMode
 } from "./api";
@@ -56,6 +60,14 @@ function mergeTaskMessages(existing: TaskMessage[], incoming: TaskMessage[]): Ta
     merged.push(message);
   }
   return merged.sort((a, b) => a.seq - b.seq);
+}
+
+function mergeToolConfirmations(existing: ToolConfirmation[] = [], incoming: ToolConfirmation[] = []): ToolConfirmation[] {
+  const byId = new Map(existing.map((confirmation) => [confirmation.id, confirmation]));
+  for (const confirmation of incoming) {
+    byId.set(confirmation.id, confirmation);
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 function activityStatusLabel(status: AgentTask["status"]): string {
@@ -94,7 +106,34 @@ function toolConfigurationModeLabel(mode: ToolConfigurationMode): string {
   }
 }
 
-function ActivityBlock({ task, taskMessages }: { task: AgentTask; taskMessages: TaskMessage[] }) {
+function toolConfirmationStatusLabel(status: ToolConfirmation["status"]): string {
+  switch (status) {
+    case "pending":
+      return "Pending";
+    case "approved":
+      return "Approved";
+    case "denied":
+      return "Denied";
+    case "expired":
+      return "Expired";
+    case "revoked":
+      return "Revoked";
+  }
+}
+
+function ActivityBlock({
+  task,
+  taskMessages,
+  toolConfirmations,
+  onApproveToolConfirmation,
+  onDenyToolConfirmation
+}: {
+  task: AgentTask;
+  taskMessages: TaskMessage[];
+  toolConfirmations: ToolConfirmation[];
+  onApproveToolConfirmation: (id: string) => void;
+  onDenyToolConfirmation: (id: string) => void;
+}) {
   const isRunning = !isTerminalTaskStatus(task.status);
   const [isOpen, setIsOpen] = useState(isRunning);
 
@@ -102,19 +141,39 @@ function ActivityBlock({ task, taskMessages }: { task: AgentTask; taskMessages: 
     setIsOpen(isRunning);
   }, [task.id, isRunning]);
 
-  const eventCount = taskMessages.length;
+  const eventCount = taskMessages.length + toolConfirmations.length;
 
   return (
     <details className="trace activity" open={isOpen} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
       <summary>{activitySummary(task, eventCount)}</summary>
       <div className="activity-events">
-        {taskMessages.length > 0 ? (
-          taskMessages.map((taskMessage) => (
-            <div key={taskMessageStreamKey(taskMessage)} className="trace-item">
-              <span className={`trace-type trace-${taskMessage.type}`}>{taskMessage.type}</span>
-              <span className="trace-content">{taskMessage.content.slice(0, 200)}</span>
-            </div>
-          ))
+        {eventCount > 0 ? (
+          <>
+            {toolConfirmations.map((confirmation) => (
+              <div key={confirmation.id} className="trace-item trace-confirmation">
+                <span className={`trace-type trace-${confirmation.status}`}>
+                  {toolConfirmationStatusLabel(confirmation.status)}
+                </span>
+                <span className="trace-content">{confirmation.mcpToolName} needs approval</span>
+                {confirmation.status === "pending" ? (
+                  <span className="confirmation-actions">
+                    <button type="button" onClick={() => onApproveToolConfirmation(confirmation.id)}>
+                      Approve
+                    </button>
+                    <button type="button" onClick={() => onDenyToolConfirmation(confirmation.id)}>
+                      Deny
+                    </button>
+                  </span>
+                ) : null}
+              </div>
+            ))}
+            {taskMessages.map((taskMessage) => (
+              <div key={taskMessageStreamKey(taskMessage)} className="trace-item">
+                <span className={`trace-type trace-${taskMessage.type}`}>{taskMessage.type}</span>
+                <span className="trace-content">{taskMessage.content.slice(0, 200)}</span>
+              </div>
+            ))}
+          </>
         ) : (
           <div className="trace-empty">No activity events yet.</div>
         )}
@@ -197,6 +256,28 @@ export default function App() {
         });
     };
     poll();
+  }
+
+  function updateToolConfirmationState(confirmation: ToolConfirmation) {
+    setActiveSession((prev) => {
+      if (!prev || prev.id !== confirmation.chatSessionId) return prev;
+      return {
+        ...prev,
+        pendingToolConfirmations: mergeToolConfirmations(prev.pendingToolConfirmations, [confirmation])
+      };
+    });
+  }
+
+  function handleApproveToolConfirmation(id: string) {
+    approveToolConfirmation(id)
+      .then(updateToolConfirmationState)
+      .catch(() => setError("Failed to approve tool call"));
+  }
+
+  function handleDenyToolConfirmation(id: string) {
+    denyToolConfirmation(id)
+      .then(updateToolConfirmationState)
+      .catch(() => setError("Failed to deny tool call"));
   }
 
   useEffect(() => {
@@ -362,7 +443,8 @@ export default function App() {
               ...prev,
               messages: [...prev.messages, scheduled.userMessage],
               latestTask: scheduled.task,
-              taskMessages: []
+              taskMessages: [],
+              pendingToolConfirmations: []
             }
           : prev
       );
@@ -403,7 +485,11 @@ export default function App() {
             return {
               ...prev,
               latestTask: data.task ?? prev.latestTask,
-              taskMessages: mergeTaskMessages(prev.taskMessages, data.taskMessages)
+              taskMessages: mergeTaskMessages(prev.taskMessages, data.taskMessages),
+              pendingToolConfirmations: mergeToolConfirmations(
+                prev.pendingToolConfirmations,
+                data.pendingToolConfirmations ?? []
+              )
             };
           });
         } catch {
@@ -419,6 +505,16 @@ export default function App() {
             if (!prev || prev.id !== sessionId) return prev;
             return { ...prev, taskMessages: mergeTaskMessages(prev.taskMessages, [data.taskMessage]) };
           });
+        } catch {
+          // ignore malformed events
+        }
+      };
+
+      const handleToolConfirmation = (rawEvent: MessageEvent) => {
+        try {
+          const data = JSON.parse(rawEvent.data) as ToolConfirmationEvent;
+          markSseUsable();
+          updateToolConfirmationState(data.confirmation);
         } catch {
           // ignore malformed events
         }
@@ -449,6 +545,8 @@ export default function App() {
 
       source.addEventListener("task_snapshot", handleSnapshot as EventListener);
       source.addEventListener("task_message", handleTaskMessage as EventListener);
+      source.addEventListener("tool_confirmation_pending", handleToolConfirmation as EventListener);
+      source.addEventListener("tool_confirmation_resolved", handleToolConfirmation as EventListener);
       source.addEventListener("task_completed", handleTerminal as EventListener);
       source.addEventListener("task_failed", handleTerminal as EventListener);
       source.addEventListener("task_timed_out", handleTerminal as EventListener);
@@ -850,7 +948,13 @@ export default function App() {
                 </article>
               ))}
               {activeSession.latestTask ? (
-                <ActivityBlock task={activeSession.latestTask} taskMessages={activeSession.taskMessages} />
+                <ActivityBlock
+                  task={activeSession.latestTask}
+                  taskMessages={activeSession.taskMessages}
+                  toolConfirmations={activeSession.pendingToolConfirmations ?? []}
+                  onApproveToolConfirmation={handleApproveToolConfirmation}
+                  onDenyToolConfirmation={handleDenyToolConfirmation}
+                />
               ) : null}
             </div>
 

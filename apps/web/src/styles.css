@@ -362,6 +362,25 @@ textarea:focus {
   padding: 10px 0;
 }
 
+.trace-confirmation {
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+}
+
+.confirmation-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.confirmation-actions button {
+  border: 1px solid #d8dee8;
+  background: #f7f9fc;
+  color: #0f172a;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
 .trace-item strong {
   text-transform: capitalize;
 }

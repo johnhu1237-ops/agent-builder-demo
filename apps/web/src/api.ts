@@ -1,4 +1,4 @@
-import type { Agent, ChatSession, ChatSessionDetail, ScheduleChatMessageResponse } from "@agent-builder/shared";
+import type { Agent, ChatSession, ChatSessionDetail, ScheduleChatMessageResponse, ToolConfirmation } from "@agent-builder/shared";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4001";
 
@@ -70,6 +70,20 @@ export async function updateToolConfigurationMode(
       body: JSON.stringify({ mode })
     }
   );
+}
+
+export async function approveToolConfirmation(id: string): Promise<ToolConfirmation> {
+  return requestJson<ToolConfirmation>(`/api/tool-confirmations/${encodeURIComponent(id)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function denyToolConfirmation(id: string): Promise<ToolConfirmation> {
+  return requestJson<ToolConfirmation>(`/api/tool-confirmations/${encodeURIComponent(id)}/deny`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
 }
 
 // Default agent (kept for backward compat)

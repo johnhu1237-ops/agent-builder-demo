@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { nanoid } from "nanoid";
 import type { Pool, PoolClient } from "pg";
 import {
@@ -15,6 +15,8 @@ import {
   type CreateAgentRequest,
   type RunnerTaskMessage,
   type TaskMessage,
+  type ToolConfirmation,
+  type ToolConfirmationStatus,
   type UpdateAgentRequest
 } from "@agent-builder/shared";
 import { redactSecrets, redactUnknownJson } from "./redaction";
@@ -110,6 +112,23 @@ type ToolConfigurationWithAccountRow = ToolConfigurationRow & {
   connected_account_status: ConnectedAccount["status"];
 };
 
+type ToolConfirmationRow = {
+  id: string;
+  agent_task_id: string;
+  chat_session_id: string;
+  agent_id: string;
+  connected_account_id: string;
+  provider: string;
+  mcp_tool_name: string;
+  provider_tool_name: string;
+  args_hash: string;
+  preview_json: unknown;
+  status: ToolConfirmationStatus;
+  expires_at: Date | string;
+  resolved_at: Date | string | null;
+  created_at: Date | string;
+};
+
 export type IssuedAgentTaskLease = {
   id: string;
   token: string;
@@ -179,6 +198,18 @@ export type RecordToolCallAuditInput = {
   args: unknown;
   status: "allowed" | "denied" | "confirmation_required" | "executed" | "failed" | "timed_out";
   error?: string | null;
+};
+
+export type CreateToolConfirmationInput = {
+  agentTaskId: string;
+  chatSessionId: string;
+  agentId: string;
+  connectedAccountId: string;
+  provider: string;
+  mcpToolName: string;
+  providerToolName: string;
+  args: unknown;
+  expiresAt: Date;
 };
 
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
@@ -320,6 +351,25 @@ function mapToolConfigurationWithAccount(row: ToolConfigurationWithAccountRow): 
   };
 }
 
+function mapToolConfirmation(row: ToolConfirmationRow): ToolConfirmation {
+  return {
+    id: row.id,
+    agentTaskId: row.agent_task_id,
+    chatSessionId: row.chat_session_id,
+    agentId: row.agent_id,
+    connectedAccountId: row.connected_account_id,
+    provider: row.provider,
+    mcpToolName: row.mcp_tool_name,
+    providerToolName: row.provider_tool_name,
+    argsHash: row.args_hash,
+    previewJson: row.preview_json,
+    status: row.status,
+    expiresAt: toIsoString(row.expires_at) ?? new Date(0).toISOString(),
+    resolvedAt: toIsoString(row.resolved_at),
+    createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString()
+  };
+}
+
 function redactTaskMessage(message: RunnerTaskMessage): RunnerTaskMessage {
   return {
     ...message,
@@ -354,6 +404,25 @@ function pickMissingText(current: string | null, incoming: string | null): strin
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (value == null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+export function toolArgsHash(args: unknown): string {
+  const secret = process.env.TOOL_CONFIRMATION_HMAC_SECRET ?? "agent-builder-demo-tool-confirmations";
+  return createHmac("sha256", secret).update(canonicalJson(args)).digest("hex");
 }
 
 function createLeaseToken(): string {
@@ -803,6 +872,126 @@ export class PgChatStore {
     );
   }
 
+  async createToolConfirmation(input: CreateToolConfirmationInput): Promise<ToolConfirmation> {
+    const result = await this.pool.query<ToolConfirmationRow>(
+      `
+        insert into tool_confirmations (
+          id,
+          agent_task_id,
+          chat_session_id,
+          agent_id,
+          connected_account_id,
+          provider,
+          mcp_tool_name,
+          provider_tool_name,
+          args_hash,
+          preview_json,
+          status,
+          expires_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11)
+        returning *
+      `,
+      [
+        nanoid(),
+        input.agentTaskId,
+        input.chatSessionId,
+        input.agentId,
+        input.connectedAccountId,
+        input.provider,
+        input.mcpToolName,
+        input.providerToolName,
+        toolArgsHash(input.args),
+        redactUnknownJson(input.args),
+        input.expiresAt
+      ]
+    );
+
+    return mapToolConfirmation(result.rows[0]);
+  }
+
+  async getToolConfirmation(id: string): Promise<ToolConfirmation | null> {
+    const result = await this.pool.query<ToolConfirmationRow>(
+      `
+        select *
+        from tool_confirmations
+        where id = $1
+      `,
+      [id]
+    );
+    return result.rows[0] ? mapToolConfirmation(result.rows[0]) : null;
+  }
+
+  async listPendingToolConfirmationsForChatSession(chatSessionId: string): Promise<ToolConfirmation[]> {
+    const result = await this.pool.query<ToolConfirmationRow>(
+      `
+        select *
+        from tool_confirmations
+        where chat_session_id = $1
+          and status = 'pending'
+          and expires_at > now()
+        order by created_at asc, id asc
+      `,
+      [chatSessionId]
+    );
+    return result.rows.map(mapToolConfirmation);
+  }
+
+  async resolveToolConfirmation(
+    id: string,
+    input: { status: Exclude<ToolConfirmationStatus, "pending">; expectedArgsHash?: string }
+  ): Promise<
+    | { status: "resolved"; confirmation: ToolConfirmation }
+    | { status: "not_found" }
+    | { status: "not_pending"; confirmation: ToolConfirmation }
+    | { status: "args_mismatch" }
+  > {
+    const current = await this.getToolConfirmation(id);
+    if (!current) {
+      return { status: "not_found" };
+    }
+    if (current.status !== "pending") {
+      return { status: "not_pending", confirmation: current };
+    }
+    if (input.expectedArgsHash && current.argsHash !== input.expectedArgsHash) {
+      return { status: "args_mismatch" };
+    }
+
+    const result = await this.pool.query<ToolConfirmationRow>(
+      `
+        update tool_confirmations
+        set status = $2,
+            resolved_at = now()
+        where id = $1
+          and status = 'pending'
+        returning *
+      `,
+      [id, input.status]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      const latest = await this.getToolConfirmation(id);
+      return latest ? { status: "not_pending", confirmation: latest } : { status: "not_found" };
+    }
+
+    return { status: "resolved", confirmation: mapToolConfirmation(row) };
+  }
+
+  async expirePendingToolConfirmations(now: Date = new Date()): Promise<number> {
+    const result = await this.pool.query(
+      `
+        update tool_confirmations
+        set status = 'expired',
+            resolved_at = now()
+        where status = 'pending'
+          and expires_at <= $1
+      `,
+      [now]
+    );
+    return result.rowCount ?? 0;
+  }
+
   async createChatSession(
     input:
       | { agentId: string; title?: string }
@@ -926,7 +1115,8 @@ export class PgChatStore {
       ...mapChatSession(sessionRow),
       messages: messagesResult.rows.map(mapChatMessage),
       latestTask,
-      taskMessages: taskMessagesResult.rows.map(mapTaskMessage)
+      taskMessages: taskMessagesResult.rows.map(mapTaskMessage),
+      pendingToolConfirmations: await this.listPendingToolConfirmationsForChatSession(id)
     };
   }
 
