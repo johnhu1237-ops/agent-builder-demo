@@ -128,6 +128,7 @@ export type ConnectedAccount = {
 };
 
 export type ToolConfigurationMode = "auto" | "ask_each_time" | "disabled";
+export type ToolConfigurationSyncStatus = "syncing" | "synced" | "sync_failed";
 
 export type ToolConfiguration = {
   id: string;
@@ -136,6 +137,11 @@ export type ToolConfiguration = {
   appId: string;
   toolName: string;
   mode: ToolConfigurationMode;
+  syncStatus: ToolConfigurationSyncStatus;
+  syncError: string | null;
+  syncVersion: string | null;
+  lastSyncedMode: ToolConfigurationMode | null;
+  lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
