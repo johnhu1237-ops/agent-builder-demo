@@ -713,6 +713,28 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
     `
   );
 
+  await createTableIfNeeded(
+    db,
+    "tool_call_audit_logs",
+    `
+      create table if not exists tool_call_audit_logs (
+        id text primary key,
+        agent_task_id text not null references agent_tasks(id) on delete cascade,
+        chat_session_id text not null references chat_session(id) on delete cascade,
+        agent_id text not null references agents(id) on delete cascade,
+        connected_account_id text references connected_accounts(id) on delete set null,
+        provider text not null,
+        mcp_tool_name text not null,
+        provider_tool_name text,
+        mode text,
+        args_redacted jsonb,
+        status text not null,
+        error text,
+        created_at timestamptz not null default now()
+      )
+    `
+  );
+
   await createNonUniqueIndexIfNeeded(
     db,
     "idx_agent_task_leases_agent_task_id",

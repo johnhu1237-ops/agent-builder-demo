@@ -604,6 +604,342 @@ describe("API orchestrator", () => {
     await drainPendingTaskExecutions(app);
   });
 
+  it("executes auto-mode MCP tools/call through the external tool executor and records redacted audit", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const externalToolExecutor = {
+      executeTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "Created issue #123" }]
+      })
+    };
+    const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+    await store.updateToolConfigurationMode({
+      agentId: agent.id,
+      toolConfigurationId: toolConfiguration.id,
+      mode: "auto"
+    });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP call" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Create an issue." })
+      .expect(202);
+
+    const call = runAgentTask.mock.calls[0]![0];
+    const response = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "github_create_issue",
+          arguments: {
+            title: "Ship gateway",
+            body: "Use token sk-live-secret-value"
+          }
+        }
+      })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        content: [{ type: "text", text: "Created issue #123" }]
+      }
+    });
+    expect(externalToolExecutor.executeTool).toHaveBeenCalledWith({
+      arcadeUserId: "github-user-1",
+      provider: "mock-github",
+      mcpToolName: "github_create_issue",
+      providerToolName: "github_create_issue",
+      args: {
+        title: "Ship gateway",
+        body: "Use token sk-live-secret-value"
+      }
+    });
+
+    const auditRows = await pool.query<{
+      agent_task_id: string;
+      chat_session_id: string;
+      agent_id: string;
+      connected_account_id: string;
+      provider: string;
+      mcp_tool_name: string;
+      provider_tool_name: string;
+      mode: string;
+      args_redacted: unknown;
+      status: string;
+      error: string | null;
+    }>(`select agent_task_id, chat_session_id, agent_id, connected_account_id, provider, mcp_tool_name, provider_tool_name, mode, args_redacted, status, error from tool_call_audit_logs`);
+
+    expect(auditRows.rows).toEqual([
+      {
+        agent_task_id: call.taskId,
+        chat_session_id: sessionResponse.body.id,
+        agent_id: agent.id,
+        connected_account_id: toolConfiguration.connectedAccountId,
+        provider: "mock-github",
+        mcp_tool_name: "github_create_issue",
+        provider_tool_name: "github_create_issue",
+        mode: "auto",
+        args_redacted: {
+          title: "Ship gateway",
+          body: "Use token [REDACTED]"
+        },
+        status: "executed",
+        error: null
+      }
+    ]);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
+  it("rejects disabled MCP tools/call before execution and records denied audit", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const externalToolExecutor = {
+      executeTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "should not run" }]
+      })
+    };
+    const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+    await store.updateToolConfigurationMode({
+      agentId: agent.id,
+      toolConfigurationId: toolConfiguration.id,
+      mode: "disabled"
+    });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP disabled call" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Create an issue." })
+      .expect(202);
+
+    const call = runAgentTask.mock.calls[0]![0];
+    const response = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "github_create_issue",
+          arguments: { title: "Nope" }
+        }
+      })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      jsonrpc: "2.0",
+      id: 5,
+      error: {
+        code: -32602,
+        message: "Tool is disabled for this Agent"
+      }
+    });
+    expect(externalToolExecutor.executeTool).not.toHaveBeenCalled();
+
+    const auditRows = await pool.query<{ status: string; error: string | null; args_redacted: unknown }>(
+      `select status, error, args_redacted from tool_call_audit_logs`
+    );
+    expect(auditRows.rows).toEqual([
+      {
+        status: "denied",
+        error: "Tool is disabled for this Agent",
+        args_redacted: { title: "Nope" }
+      }
+    ]);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
+  it("rejects unknown and confirmation-required MCP tools/call before execution", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const externalToolExecutor = {
+      executeTool: vi.fn()
+    };
+    const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP rejected calls" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Call tools." })
+      .expect(202);
+
+    const call = runAgentTask.mock.calls[0]![0];
+    const unknownResponse = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: { name: "unknown_tool", arguments: { token: "secret-token" } }
+      })
+      .expect(200);
+
+    expect(unknownResponse.body).toEqual({
+      jsonrpc: "2.0",
+      id: 7,
+      error: { code: -32602, message: "Tool is not available to this Agent Task" }
+    });
+
+    const confirmationRequiredResponse = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: { name: "github_create_issue", arguments: { title: "Needs approval" } }
+      })
+      .expect(200);
+
+    expect(confirmationRequiredResponse.body).toEqual({
+      jsonrpc: "2.0",
+      id: 8,
+      error: { code: -32602, message: "Tool confirmation is required" }
+    });
+    expect(externalToolExecutor.executeTool).not.toHaveBeenCalled();
+
+    const auditRows = await pool.query<{ mcp_tool_name: string; status: string; mode: string | null; args_redacted: unknown }>(
+      `select mcp_tool_name, status, mode, args_redacted from tool_call_audit_logs order by created_at asc`
+    );
+    expect(auditRows.rows).toEqual([
+      {
+        mcp_tool_name: "unknown_tool",
+        status: "denied",
+        mode: null,
+        args_redacted: { token: "[REDACTED]" }
+      },
+      {
+        mcp_tool_name: "github_create_issue",
+        status: "confirmation_required",
+        mode: "ask_each_time",
+        args_redacted: { title: "Needs approval" }
+      }
+    ]);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
+  it("returns MCP-friendly errors and failed audit records when auto tool execution fails", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const externalToolExecutor = {
+      executeTool: vi.fn().mockRejectedValue(new Error("Arcade execution failed"))
+    };
+    const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+    await store.updateToolConfigurationMode({
+      agentId: agent.id,
+      toolConfigurationId: toolConfiguration.id,
+      mode: "auto"
+    });
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "MCP failed call" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Create an issue." })
+      .expect(202);
+
+    const call = runAgentTask.mock.calls[0]![0];
+    const response = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: {
+          name: "github_create_issue",
+          arguments: { title: "Retry later", authorization: "Bearer secret-token" }
+        }
+      })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      jsonrpc: "2.0",
+      id: 6,
+      error: {
+        code: -32603,
+        message: "Arcade execution failed"
+      }
+    });
+
+    const auditRows = await pool.query<{ status: string; error: string | null; args_redacted: unknown }>(
+      `select status, error, args_redacted from tool_call_audit_logs`
+    );
+    expect(auditRows.rows).toEqual([
+      {
+        status: "failed",
+        error: "Arcade execution failed",
+        args_redacted: { title: "Retry later", authorization: "[REDACTED]" }
+      }
+    ]);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
   it("binds an Agent Task Lease to one sandbox id exactly once", async () => {
     process.env.RUNNER_EVENT_TOKEN = "runner-token";
     const deferred = createDeferred<RunnerAgentTaskResponse>();

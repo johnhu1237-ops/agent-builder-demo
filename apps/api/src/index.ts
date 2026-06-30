@@ -23,9 +23,11 @@ import { redactSecrets } from "./redaction";
 import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
 import { decryptApiKey, validateEncryptionKey } from "./encryption";
 import { TaskEventBroadcaster } from "./task-events";
+import { ArcadeApiToolExecutor, type ExternalToolExecutor } from "./external-tool-executor";
 
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
+  externalToolExecutor?: ExternalToolExecutor;
 };
 
 function publicAgentSpec(spec: AgentSpec): AgentSpec {
@@ -55,6 +57,24 @@ function jsonRpcResult(id: unknown, result: unknown) {
 
 function jsonRpcError(id: unknown, code: number, message: string) {
   return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+}
+
+function mcpToolCallParams(body: unknown): { name: string; args: unknown } | null {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+  const params = (body as { params?: unknown }).params;
+  if (!params || typeof params !== "object") {
+    return null;
+  }
+  const name = (params as { name?: unknown }).name;
+  if (typeof name !== "string" || !name.trim()) {
+    return null;
+  }
+  return {
+    name: name.trim(),
+    args: (params as { arguments?: unknown }).arguments ?? {}
+  };
 }
 
 const gatewayToolDefinitions = {
@@ -237,6 +257,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
       deps.runAgentTask ??
       createHttpRunnerClient(process.env.RUNNER_BASE_URL ?? "http://localhost:4101").runAgentTask
   };
+  const externalToolExecutor = deps.externalToolExecutor ?? new ArcadeApiToolExecutor();
 
   const pendingTaskExecutions = new Set<Promise<void>>();
   app.locals.pendingTaskExecutions = pendingTaskExecutions;
@@ -583,7 +604,99 @@ export function createApiApp(deps: ApiDependencies = {}) {
     }
 
     if (method === "tools/call") {
-      res.json(jsonRpcError(id, -32601, "not_implemented"));
+      const toolCall = mcpToolCallParams(req.body);
+      if (!toolCall) {
+        res.status(400).json(jsonRpcError(id, -32602, "Invalid tools/call params"));
+        return;
+      }
+
+      const toolConfiguration = await chatStore.getToolConfigurationForAgentTool(lease.agentId, toolCall.name);
+      if (!toolConfiguration || toolConfiguration.connectedAccountStatus !== "connected") {
+        await chatStore.recordToolCallAudit({
+          agentTaskId: lease.agentTaskId,
+          chatSessionId: lease.chatSessionId,
+          agentId: lease.agentId,
+          connectedAccountId: toolConfiguration?.connectedAccountId ?? null,
+          provider: toolConfiguration?.appId ?? "unknown",
+          mcpToolName: toolCall.name,
+          providerToolName: toolConfiguration?.toolName ?? null,
+          mode: toolConfiguration?.mode ?? null,
+          args: toolCall.args,
+          status: "denied",
+          error: "Tool is not available to this Agent Task"
+        });
+        res.json(jsonRpcError(id, -32602, "Tool is not available to this Agent Task"));
+        return;
+      }
+
+      if (toolConfiguration.mode !== "auto") {
+        await chatStore.recordToolCallAudit({
+          agentTaskId: lease.agentTaskId,
+          chatSessionId: lease.chatSessionId,
+          agentId: lease.agentId,
+          connectedAccountId: toolConfiguration.connectedAccountId,
+          provider: toolConfiguration.appId,
+          mcpToolName: toolCall.name,
+          providerToolName: toolConfiguration.toolName,
+          mode: toolConfiguration.mode,
+          args: toolCall.args,
+          status: toolConfiguration.mode === "ask_each_time" ? "confirmation_required" : "denied",
+          error:
+            toolConfiguration.mode === "ask_each_time"
+              ? "Tool confirmation is required"
+              : "Tool is disabled for this Agent"
+        });
+        res.json(
+          jsonRpcError(
+            id,
+            -32602,
+            toolConfiguration.mode === "ask_each_time"
+              ? "Tool confirmation is required"
+              : "Tool is disabled for this Agent"
+          )
+        );
+        return;
+      }
+
+      try {
+        const execution = await externalToolExecutor.executeTool({
+          arcadeUserId: toolConfiguration.externalAccountId,
+          provider: toolConfiguration.appId,
+          mcpToolName: toolCall.name,
+          providerToolName: toolConfiguration.toolName,
+          args: toolCall.args
+        });
+        await chatStore.recordToolCallAudit({
+          agentTaskId: lease.agentTaskId,
+          chatSessionId: lease.chatSessionId,
+          agentId: lease.agentId,
+          connectedAccountId: toolConfiguration.connectedAccountId,
+          provider: toolConfiguration.appId,
+          mcpToolName: toolCall.name,
+          providerToolName: toolConfiguration.toolName,
+          mode: toolConfiguration.mode,
+          args: toolCall.args,
+          status: "executed",
+          error: null
+        });
+        res.json(jsonRpcResult(id, execution));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "External tool execution failed";
+        await chatStore.recordToolCallAudit({
+          agentTaskId: lease.agentTaskId,
+          chatSessionId: lease.chatSessionId,
+          agentId: lease.agentId,
+          connectedAccountId: toolConfiguration.connectedAccountId,
+          provider: toolConfiguration.appId,
+          mcpToolName: toolCall.name,
+          providerToolName: toolConfiguration.toolName,
+          mode: toolConfiguration.mode,
+          args: toolCall.args,
+          status: "failed",
+          error: message
+        });
+        res.json(jsonRpcError(id, -32603, message));
+      }
       return;
     }
 

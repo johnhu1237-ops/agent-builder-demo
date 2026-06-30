@@ -105,6 +105,11 @@ type ToolConfigurationRow = {
   updated_at: Date | string;
 };
 
+type ToolConfigurationWithAccountRow = ToolConfigurationRow & {
+  external_account_id: string;
+  connected_account_status: ConnectedAccount["status"];
+};
+
 export type IssuedAgentTaskLease = {
   id: string;
   token: string;
@@ -143,6 +148,11 @@ export type ToolConfiguration = {
   updatedAt: string;
 };
 
+export type ToolConfigurationWithAccount = ToolConfiguration & {
+  externalAccountId: string;
+  connectedAccountStatus: ConnectedAccount["status"];
+};
+
 export type CreateConnectedAccountInput = {
   workspaceId: string;
   appId: string;
@@ -155,6 +165,20 @@ export type UpdateToolConfigurationModeInput = {
   agentId: string;
   toolConfigurationId: string;
   mode: ToolConfigurationMode;
+};
+
+export type RecordToolCallAuditInput = {
+  agentTaskId: string;
+  chatSessionId: string;
+  agentId: string;
+  connectedAccountId: string | null;
+  provider: string;
+  mcpToolName: string;
+  providerToolName: string | null;
+  mode: ToolConfigurationMode | null;
+  args: unknown;
+  status: "allowed" | "denied" | "confirmation_required" | "executed" | "failed" | "timed_out";
+  error?: string | null;
 };
 
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
@@ -285,6 +309,14 @@ function mapToolConfiguration(row: ToolConfigurationRow): ToolConfiguration {
     mode: row.mode,
     createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
     updatedAt: toIsoString(row.updated_at) ?? new Date(0).toISOString()
+  };
+}
+
+function mapToolConfigurationWithAccount(row: ToolConfigurationWithAccountRow): ToolConfigurationWithAccount {
+  return {
+    ...mapToolConfiguration(row),
+    externalAccountId: row.external_account_id,
+    connectedAccountStatus: row.connected_account_status
   };
 }
 
@@ -686,6 +718,31 @@ export class PgChatStore {
     return result.rows.map(mapToolConfiguration);
   }
 
+  async getToolConfigurationForAgentTool(
+    agentId: string,
+    toolName: string
+  ): Promise<ToolConfigurationWithAccount | null> {
+    const result = await this.pool.query<ToolConfigurationWithAccountRow>(
+      `
+        select
+          tc.*,
+          ca.external_account_id,
+          ca.status as connected_account_status
+        from tool_configurations tc
+        join connected_accounts ca on ca.id = tc.connected_account_id
+        join connected_account_agents caa
+          on caa.connected_account_id = ca.id
+         and caa.agent_id = tc.agent_id
+        where tc.agent_id = $1
+          and tc.tool_name = $2
+        limit 1
+      `,
+      [agentId, toolName]
+    );
+
+    return result.rows[0] ? mapToolConfigurationWithAccount(result.rows[0]) : null;
+  }
+
   async updateToolConfigurationMode(input: UpdateToolConfigurationModeInput): Promise<ToolConfiguration> {
     if (!toolConfigurationModes.has(input.mode)) {
       throw new Error(`Unsupported Tool Configuration mode: ${input.mode}`);
@@ -708,6 +765,42 @@ export class PgChatStore {
     }
 
     return mapToolConfiguration(result.rows[0]);
+  }
+
+  async recordToolCallAudit(input: RecordToolCallAuditInput): Promise<void> {
+    await this.pool.query(
+      `
+        insert into tool_call_audit_logs (
+          id,
+          agent_task_id,
+          chat_session_id,
+          agent_id,
+          connected_account_id,
+          provider,
+          mcp_tool_name,
+          provider_tool_name,
+          mode,
+          args_redacted,
+          status,
+          error
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      `,
+      [
+        nanoid(),
+        input.agentTaskId,
+        input.chatSessionId,
+        input.agentId,
+        input.connectedAccountId,
+        input.provider,
+        input.mcpToolName,
+        input.providerToolName,
+        input.mode,
+        redactUnknownJson(input.args),
+        input.status,
+        input.error ?? null
+      ]
+    );
   }
 
   async createChatSession(
