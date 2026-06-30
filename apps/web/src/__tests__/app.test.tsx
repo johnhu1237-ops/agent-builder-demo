@@ -4,9 +4,14 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultAgentSpec } from "@agent-builder/shared";
 import App from "../App";
+import { redirectToExternalUrl } from "../browser-navigation";
 
 const fetchMock = vi.fn();
 let githubConnected = false;
+
+vi.mock("../browser-navigation", () => ({
+  redirectToExternalUrl: vi.fn()
+}));
 
 type EventSourceListener = (event: MessageEvent) => void;
 
@@ -414,12 +419,6 @@ describe("multi-agent UI", () => {
   });
 
   it("starts GitHub authorization without directly completing the Connected App", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation((message?: unknown, ...args: unknown[]) => {
-      if (String(message).includes("Not implemented: navigation")) {
-        return;
-      }
-      process.stderr.write([message, ...args].map(String).join(" ") + "\n");
-    });
     render(<App />);
     const user = userEvent.setup();
 
@@ -449,8 +448,8 @@ describe("multi-agent UI", () => {
             options?.method === "POST"
         )
       ).toBe(false);
+      expect(redirectToExternalUrl).toHaveBeenCalledWith("https://arcade.dev/authorize/github/demo");
     });
-    consoleError.mockRestore();
   });
 
   it("completes GitHub authorization from the Arcade callback and refreshes Tools state", async () => {

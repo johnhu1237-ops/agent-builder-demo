@@ -20,6 +20,7 @@ import {
 } from "@agent-builder/shared";
 import { createExportPayload } from "./defaults";
 import { formatRelativeTime } from "./relative-time";
+import { redirectToExternalUrl } from "./browser-navigation";
 import {
   listAgents,
   createAgent,
@@ -469,7 +470,7 @@ export default function App() {
       const returnUrl = `${window.location.origin}/oauth/arcade/github/callback?agentId=${encodeURIComponent(activeAgent.id)}`;
       const authorization = await startGithubConnectedAppAuthorization(activeAgent.id, returnUrl);
       setError(null);
-      window.location.assign(authorization.authorizationUrl);
+      redirectToExternalUrl(authorization.authorizationUrl);
     } catch {
       setError("Failed to connect GitHub");
     }
