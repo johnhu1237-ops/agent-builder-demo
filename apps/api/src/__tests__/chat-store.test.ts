@@ -1387,6 +1387,13 @@ describe("PgChatStore", () => {
           appId: "mock-github",
           toolName: "github_create_issue",
           mode: "ask_each_time"
+        }),
+        expect.objectContaining({
+          agentId: agent.id,
+          connectedAccountId: connectedAccount.id,
+          appId: "mock-github",
+          toolName: "github_search_issues",
+          mode: "ask_each_time"
         })
       ]);
       expect(JSON.stringify((await store.getAgent(agent.id))?.spec)).not.toContain("connectedAccount");
