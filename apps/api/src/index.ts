@@ -92,6 +92,17 @@ function mcpToolCallParams(body: unknown): { name: string; args: unknown } | nul
 }
 
 const gatewayToolDefinitions = {
+  github_search_issues: {
+    name: "github_search_issues",
+    description: "Search GitHub issues through the product MCP gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" }
+      },
+      required: ["query"]
+    }
+  },
   github_create_issue: {
     name: "github_create_issue",
     description: "Create a GitHub issue through the product MCP gateway.",
