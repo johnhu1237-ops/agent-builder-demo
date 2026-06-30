@@ -27,6 +27,19 @@ RUNNER_MODE=fake DATABASE_URL=$DATABASE_URL pnpm dev
 
 Open `http://localhost:5173`.
 
+## Arcade GitHub Authorization Smoke
+
+Set `ARCADE_API_KEY` in the API environment before starting services. For manual GitHub authorization checks, use a fresh Agent or clear stale demo Connected Account rows first; older local E2E data may contain `E2E Mock GitHub` or `Mock GitHub` accounts that predate Arcade authorization and should not be treated as proof of a real Connected App Authorization.
+
+```sql
+update connected_accounts
+set status = 'disconnected'
+where app_id = 'mock-github'
+  and account_label in ('E2E Mock GitHub', 'Mock GitHub', 'Demo GitHub');
+```
+
+Then open Tools > Apps, click Connect GitHub, complete the Arcade-owned GitHub flow, and confirm GitHub appears as `GitHub via Arcade`.
+
 ## Fake Chat Smoke
 
 1. Enter any non-empty API key.

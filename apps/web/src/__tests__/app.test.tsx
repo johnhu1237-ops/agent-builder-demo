@@ -6,6 +6,7 @@ import { defaultAgentSpec } from "@agent-builder/shared";
 import App from "../App";
 
 const fetchMock = vi.fn();
+let githubConnected = false;
 
 type EventSourceListener = (event: MessageEvent) => void;
 
@@ -105,6 +106,8 @@ function sessionDetailFixture(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   global.fetch = fetchMock;
   (global as Record<string, unknown>).EventSource = FakeEventSource;
+  window.history.pushState({}, "", "/");
+  githubConnected = false;
   fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
     const method = options?.method ?? "GET";
 
@@ -130,7 +133,19 @@ beforeEach(() => {
         updatedAt: new Date().toISOString()
       });
     }
+    if (/\/api\/agents\/[^/]+\/connected-apps\/github\/authorize$/.test(url) && method === "POST") {
+      return jsonResponse(
+        {
+          provider: "github",
+          arcadeUserId: "demo-user",
+          authorizationUrl: "https://arcade.dev/authorize/github/demo",
+          status: "authorization_required"
+        },
+        202
+      );
+    }
     if (/\/api\/agents\/[^/]+\/connected-apps\/github\/complete$/.test(url) && method === "POST") {
+      githubConnected = true;
       return jsonResponse(
         {
           appId: "mock-github",
@@ -142,7 +157,7 @@ beforeEach(() => {
             id: "connected_account_1",
             workspaceId: "workspace_demo",
             appId: "mock-github",
-            accountLabel: "Demo GitHub",
+            accountLabel: "GitHub via Arcade",
             externalAccountId: "demo-user",
             status: "connected",
             createdAt: new Date().toISOString(),
@@ -165,6 +180,39 @@ beforeEach(() => {
       );
     }
     if (/\/api\/agents\/[^/]+\/connected-apps$/.test(url) && method === "GET") {
+      if (githubConnected) {
+        return jsonResponse([
+          {
+            appId: "mock-github",
+            provider: "github",
+            label: "GitHub",
+            description: "Connect GitHub issues.",
+            status: "connected",
+            connectedAccount: {
+              id: "connected_account_1",
+              workspaceId: "workspace_demo",
+              appId: "mock-github",
+              accountLabel: "GitHub via Arcade",
+              externalAccountId: "demo-user",
+              status: "connected",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            },
+            tools: [
+              {
+                id: "tool_config_1",
+                agentId: "agent_1",
+                connectedAccountId: "connected_account_1",
+                appId: "mock-github",
+                toolName: "github_create_issue",
+                mode: "ask_each_time",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              }
+            ]
+          }
+        ]);
+      }
       return jsonResponse([
         {
           appId: "mock-github",
@@ -365,7 +413,13 @@ describe("multi-agent UI", () => {
     expect(modeSelect).toHaveValue("disabled");
   });
 
-  it("connects GitHub, configures a tool, and approves a pending Tool Confirmation", async () => {
+  it("starts GitHub authorization without directly completing the Connected App", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation((message?: unknown, ...args: unknown[]) => {
+      if (String(message).includes("Not implemented: navigation")) {
+        return;
+      }
+      process.stderr.write([message, ...args].map(String).join(" ") + "\n");
+    });
     render(<App />);
     const user = userEvent.setup();
 
@@ -375,8 +429,34 @@ describe("multi-agent UI", () => {
     const connectButton = await screen.findByRole("button", { name: "Connect GitHub" });
     await user.click(connectButton);
 
-    const modeSelect = await screen.findByLabelText("GitHub github_create_issue mode");
-    await user.selectOptions(modeSelect, "auto");
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
+      const authorizeCall = calls.find(
+        ([url, options]) =>
+          typeof url === "string" &&
+          url.includes("/connected-apps/github/authorize") &&
+          options?.method === "POST"
+      );
+      expect(authorizeCall).toBeTruthy();
+      expect(JSON.parse(authorizeCall![1]!.body as string)).toEqual({
+        returnUrl: "http://localhost:3000/oauth/arcade/github/callback?agentId=agent_1"
+      });
+      expect(
+        calls.some(
+          ([url, options]) =>
+            typeof url === "string" &&
+            url.includes("/connected-apps/github/complete") &&
+            options?.method === "POST"
+        )
+      ).toBe(false);
+    });
+    consoleError.mockRestore();
+  });
+
+  it("completes GitHub authorization from the Arcade callback and refreshes Tools state", async () => {
+    window.history.pushState({}, "", "/oauth/arcade/github/callback?agentId=agent_1");
+
+    render(<App />);
 
     await waitFor(() => {
       const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
@@ -388,6 +468,71 @@ describe("multi-agent UI", () => {
             options?.method === "POST"
         )
       ).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/GitHub via Arcade · connected/)).toBeInTheDocument();
+      expect(screen.getByLabelText("GitHub github_create_issue mode")).toBeInTheDocument();
+      expect(window.location.pathname).toBe("/");
+    });
+  });
+
+  it("leaves GitHub unconnected and shows an error when callback completion fails", async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (url.endsWith("/api/agents") && method === "GET") return jsonResponse([agentFixture()]);
+      if (/\/api\/agents\/[^/]+\/connected-apps\/github\/complete$/.test(url) && method === "POST") {
+        return jsonResponse({ error: "GitHub is not authorized in Arcade for the demo user" }, 409);
+      }
+      if (/\/api\/agents\/[^/]+\/connected-apps$/.test(url) && method === "GET") {
+        return jsonResponse([
+          {
+            appId: "mock-github",
+            provider: "github",
+            label: "GitHub",
+            description: "Connect GitHub issues.",
+            status: "available",
+            connectedAccount: null,
+            tools: []
+          }
+        ]);
+      }
+      if (/\/api\/agents\/[^/]+\/tool-configurations$/.test(url) && method === "GET") return jsonResponse([]);
+      if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") return jsonResponse(agentFixture());
+      if (url.endsWith("/api/chat-sessions") && method === "GET") return jsonResponse([]);
+      return jsonResponse(null, 404);
+    });
+    window.history.pushState({}, "", "/oauth/arcade/github/callback?agentId=agent_1");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Failed to connect GitHub")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeInTheDocument();
+      expect(window.location.pathname).toBe("/");
+    });
+  });
+
+  it("configures a connected GitHub tool and approves a pending Tool Confirmation", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Research Agent/ }));
+    await user.click(await screen.findByRole("tab", { name: "Tools" }));
+
+    const connectedAppsCallIndex = fetchMock.mock.calls.findIndex(
+      ([url, options]) =>
+        typeof url === "string" &&
+        /\/api\/agents\/[^/]+\/connected-apps$/.test(url) &&
+        (options?.method ?? "GET") === "GET"
+    );
+    expect(connectedAppsCallIndex).toBeGreaterThanOrEqual(0);
+
+    const modeSelect = await screen.findByLabelText("GitHub github_create_issue mode");
+    await user.selectOptions(modeSelect, "auto");
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
       expect(
         calls.some(
           ([url, options]) =>

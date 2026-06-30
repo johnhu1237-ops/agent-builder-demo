@@ -25,6 +25,7 @@ import {
   createAgent,
   getAgent,
   updateAgent,
+  startGithubConnectedAppAuthorization,
   completeGithubConnectedApp,
   listConnectedApps,
   listToolConfigurations,
@@ -223,6 +224,76 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (window.location.pathname !== "/oauth/arcade/github/callback") {
+      return;
+    }
+
+    const agentId = new URLSearchParams(window.location.search).get("agentId");
+    if (!agentId) {
+      setError("Failed to connect GitHub");
+      window.history.replaceState({}, "", "/");
+      return;
+    }
+    const callbackAgentId = agentId;
+
+    let cancelled = false;
+    async function completeCallback() {
+      try {
+        await completeGithubConnectedApp(callbackAgentId);
+        const [agent, nextConnectedApps, nextToolConfigurations] = await Promise.all([
+          getAgent(callbackAgentId),
+          listConnectedApps(callbackAgentId).catch(() => []),
+          listToolConfigurations(callbackAgentId).catch(() => [])
+        ]);
+        if (cancelled) return;
+        setActiveAgent(agent);
+        setEditingSpec(agent.spec);
+        setConnectedApps(nextConnectedApps);
+        setToolConfigurations(nextToolConfigurations);
+        setActiveSession(null);
+        setWorkspaceView("agent-config");
+        setActiveConfigTab("tools");
+        setActiveToolsTab("apps");
+        setError(null);
+      } catch {
+        if (!cancelled) {
+          try {
+            const [agent, nextConnectedApps, nextToolConfigurations] = await Promise.all([
+              getAgent(callbackAgentId),
+              listConnectedApps(callbackAgentId).catch(() => []),
+              listToolConfigurations(callbackAgentId).catch(() => [])
+            ]);
+            if (!cancelled) {
+              setActiveAgent(agent);
+              setEditingSpec(agent.spec);
+              setConnectedApps(nextConnectedApps);
+              setToolConfigurations(nextToolConfigurations);
+              setActiveSession(null);
+              setWorkspaceView("agent-config");
+              setActiveConfigTab("tools");
+              setActiveToolsTab("apps");
+            }
+          } catch {
+            // The connection error below is the user-facing failure for this path.
+          }
+          if (!cancelled) {
+            setError("Failed to connect GitHub");
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          window.history.replaceState({}, "", "/");
+        }
+      }
+    }
+
+    completeCallback();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   function stopPolling() {
     if (pollingTimerRef.current != null) {
       window.clearTimeout(pollingTimerRef.current);
@@ -395,19 +466,10 @@ export default function App() {
   async function handleConnectGithub() {
     if (!activeAgent) return;
     try {
-      const connectedApp = await completeGithubConnectedApp(activeAgent.id);
-      setConnectedApps((current) => {
-        const withoutGithub = current.filter((app) => app.provider !== "github");
-        return [connectedApp, ...withoutGithub];
-      });
-      setToolConfigurations((current) => {
-        const byId = new Map(current.map((toolConfiguration) => [toolConfiguration.id, toolConfiguration]));
-        for (const toolConfiguration of connectedApp.tools) {
-          byId.set(toolConfiguration.id, toolConfiguration);
-        }
-        return [...byId.values()];
-      });
+      const returnUrl = `${window.location.origin}/oauth/arcade/github/callback?agentId=${encodeURIComponent(activeAgent.id)}`;
+      const authorization = await startGithubConnectedAppAuthorization(activeAgent.id, returnUrl);
       setError(null);
+      window.location.assign(authorization.authorizationUrl);
     } catch {
       setError("Failed to connect GitHub");
     }
@@ -1055,10 +1117,9 @@ export default function App() {
               );
             })()}
 
-            {error ? <div className="error-banner">{error}</div> : null}
-
           </div>
         ) : null}
+        {error ? <div className="error-banner">{error}</div> : null}
       </section>
     </main>
   );
