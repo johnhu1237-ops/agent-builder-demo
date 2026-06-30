@@ -394,6 +394,48 @@ export function createApiApp(deps: ApiDependencies = {}) {
     }
   });
 
+  app.get("/api/agents/:id/connected-apps", async (req, res) => {
+    const agent = await chatStore.getAgent(req.params.id);
+    if (!agent) {
+      res.status(404).json(stableError("Agent not found"));
+      return;
+    }
+    res.json(await chatStore.listConnectedAppsForAgent(req.params.id));
+  });
+
+  app.post("/api/agents/:id/connected-apps/github/authorize", async (req, res) => {
+    const agent = await chatStore.getAgent(req.params.id);
+    if (!agent) {
+      res.status(404).json(stableError("Agent not found"));
+      return;
+    }
+    res.status(202).json({
+      provider: "github",
+      arcadeUserId: "demo-user",
+      authorizationUrl: null,
+      status: "ready_for_demo_completion"
+    });
+  });
+
+  app.post("/api/agents/:id/connected-apps/github/complete", async (req, res) => {
+    const agent = await chatStore.getAgent(req.params.id);
+    if (!agent) {
+      res.status(404).json(stableError("Agent not found"));
+      return;
+    }
+
+    await chatStore.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: String(req.body?.accountLabel ?? "Demo GitHub").trim() || "Demo GitHub",
+      externalAccountId: String(req.body?.externalAccountId ?? "demo-user").trim() || "demo-user",
+      agentIds: [req.params.id]
+    });
+
+    const [connectedApp] = await chatStore.listConnectedAppsForAgent(req.params.id);
+    res.status(201).json(connectedApp);
+  });
+
   app.get("/api/agents/:id/tool-configurations", async (req, res) => {
     const agent = await chatStore.getAgent(req.params.id);
     if (!agent) {
@@ -414,6 +456,33 @@ export function createApiApp(deps: ApiDependencies = {}) {
       const updated = await chatStore.updateToolConfigurationMode({
         agentId: req.params.id,
         toolConfigurationId: req.params.toolConfigurationId,
+        mode: mode as "auto" | "ask_each_time" | "disabled"
+      });
+      res.json(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Update failed";
+      res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
+    }
+  });
+
+  app.put("/api/agents/:id/tools/:mcpToolName", async (req, res) => {
+    const mode = String(req.body.mode ?? "");
+    if (!["auto", "ask_each_time", "disabled"].includes(mode)) {
+      res.status(400).json(stableError("Tool Configuration mode must be auto, ask_each_time, or disabled"));
+      return;
+    }
+
+    const toolConfigurations = await chatStore.listToolConfigurationsForAgent(req.params.id);
+    const toolConfiguration = toolConfigurations.find((candidate) => candidate.toolName === req.params.mcpToolName);
+    if (!toolConfiguration) {
+      res.status(404).json(stableError("Tool Configuration not found"));
+      return;
+    }
+
+    try {
+      const updated = await chatStore.updateToolConfigurationMode({
+        agentId: req.params.id,
+        toolConfigurationId: toolConfiguration.id,
         mode: mode as "auto" | "ask_each_time" | "disabled"
       });
       res.json(updated);

@@ -130,6 +130,53 @@ beforeEach(() => {
         updatedAt: new Date().toISOString()
       });
     }
+    if (/\/api\/agents\/[^/]+\/connected-apps\/github\/complete$/.test(url) && method === "POST") {
+      return jsonResponse(
+        {
+          appId: "mock-github",
+          provider: "github",
+          label: "GitHub",
+          description: "Connect GitHub issues.",
+          status: "connected",
+          connectedAccount: {
+            id: "connected_account_1",
+            workspaceId: "workspace_demo",
+            appId: "mock-github",
+            accountLabel: "Demo GitHub",
+            externalAccountId: "demo-user",
+            status: "connected",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          },
+          tools: [
+            {
+              id: "tool_config_1",
+              agentId: "agent_1",
+              connectedAccountId: "connected_account_1",
+              appId: "mock-github",
+              toolName: "github_create_issue",
+              mode: "ask_each_time",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          ]
+        },
+        201
+      );
+    }
+    if (/\/api\/agents\/[^/]+\/connected-apps$/.test(url) && method === "GET") {
+      return jsonResponse([
+        {
+          appId: "mock-github",
+          provider: "github",
+          label: "GitHub",
+          description: "Connect GitHub issues.",
+          status: "available",
+          connectedAccount: null,
+          tools: []
+        }
+      ]);
+    }
     if (/\/api\/agents\/[^/]+\/tool-configurations$/.test(url) && method === "GET") {
       return jsonResponse([
         {
@@ -316,6 +363,86 @@ describe("multi-agent UI", () => {
       expect(JSON.parse(patchCall![1]!.body as string)).toEqual({ mode: "disabled" });
     });
     expect(modeSelect).toHaveValue("disabled");
+  });
+
+  it("connects GitHub, configures a tool, and approves a pending Tool Confirmation", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Research Agent/ }));
+    await user.click(await screen.findByRole("tab", { name: "Tools" }));
+
+    const connectButton = await screen.findByRole("button", { name: "Connect GitHub" });
+    await user.click(connectButton);
+
+    const modeSelect = await screen.findByLabelText("GitHub github_create_issue mode");
+    await user.selectOptions(modeSelect, "auto");
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
+      expect(
+        calls.some(
+          ([url, options]) =>
+            typeof url === "string" &&
+            url.includes("/connected-apps/github/complete") &&
+            options?.method === "POST"
+        )
+      ).toBe(true);
+      expect(
+        calls.some(
+          ([url, options]) =>
+            typeof url === "string" &&
+            url.includes("/tool-configurations/tool_config_1") &&
+            options?.method === "PATCH" &&
+            JSON.parse(options.body as string).mode === "auto"
+        )
+      ).toBe(true);
+    });
+
+    await user.click(await screen.findByRole("button", { name: /\+ New chat/ }));
+    await user.clear(await screen.findByLabelText("Message"));
+    await user.type(screen.getByLabelText("Message"), "Create an issue");
+    await user.click(screen.getByRole("button", { name: /^Send$/ }));
+
+    await waitFor(() => {
+      expect(FakeEventSource.instances.length).toBeGreaterThan(0);
+    });
+
+    const confirmation = {
+      id: "confirmation_1",
+      agentTaskId: "task_1",
+      chatSessionId: "chat_1",
+      agentId: "agent_1",
+      connectedAccountId: "connected_account_1",
+      provider: "mock-github",
+      mcpToolName: "github_create_issue",
+      providerToolName: "github_create_issue",
+      argsHash: "hash_1",
+      previewJson: { title: "Ship gateway" },
+      status: "pending",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      resolvedAt: null,
+      createdAt: new Date().toISOString()
+    };
+    act(() => {
+      FakeEventSource.instances[FakeEventSource.instances.length - 1].emit("tool_confirmation_pending", {
+        confirmation
+      });
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Approve" }));
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
+      expect(
+        calls.some(
+          ([url, options]) =>
+            typeof url === "string" &&
+            url.endsWith("/api/tool-confirmations/confirmation_1/approve") &&
+            options?.method === "POST"
+        )
+      ).toBe(true);
+    });
   });
 
   it("switches between agent config and chat views", async () => {

@@ -25,6 +25,8 @@ import {
   createAgent,
   getAgent,
   updateAgent,
+  completeGithubConnectedApp,
+  listConnectedApps,
   listToolConfigurations,
   updateToolConfigurationMode,
   listChatSessions,
@@ -34,6 +36,7 @@ import {
   createTaskEventSource,
   approveToolConfirmation,
   denyToolConfirmation,
+  type ConnectedAppState,
   type ToolConfiguration,
   type ToolConfigurationMode
 } from "./api";
@@ -193,6 +196,7 @@ export default function App() {
   const [chatsOpen, setChatsOpen] = useState(true);
 
   const [editingSpec, setEditingSpec] = useState<AgentSpec>(defaultAgentSpec);
+  const [connectedApps, setConnectedApps] = useState<ConnectedAppState[]>([]);
   const [toolConfigurations, setToolConfigurations] = useState<ToolConfiguration[]>([]);
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("profile");
   const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>("apps");
@@ -302,10 +306,14 @@ export default function App() {
 
   async function selectAgent(agentId: string) {
     try {
-      const agent = await getAgent(agentId);
-      const nextToolConfigurations = await listToolConfigurations(agentId).catch(() => []);
+      const [agent, nextConnectedApps, nextToolConfigurations] = await Promise.all([
+        getAgent(agentId),
+        listConnectedApps(agentId).catch(() => []),
+        listToolConfigurations(agentId).catch(() => [])
+      ]);
       setActiveAgent(agent);
       setEditingSpec(agent.spec);
+      setConnectedApps(nextConnectedApps);
       setToolConfigurations(nextToolConfigurations);
       setActiveSession(null);
       setWorkspaceView("agent-config");
@@ -321,6 +329,7 @@ export default function App() {
       setAgents((prev) => [...prev, agent]);
       setActiveAgent(agent);
       setEditingSpec(agent.spec);
+      setConnectedApps([]);
       setToolConfigurations([]);
       setEditAgentApiKey("");
       setActiveSession(null);
@@ -368,10 +377,39 @@ export default function App() {
           toolConfiguration.id === updated.id ? updated : toolConfiguration
         )
       );
+      setConnectedApps((current) =>
+        current.map((connectedApp) => ({
+          ...connectedApp,
+          tools: connectedApp.tools.map((toolConfiguration) =>
+            toolConfiguration.id === updated.id ? updated : toolConfiguration
+          )
+        }))
+      );
       setError(null);
     } catch {
       setToolConfigurations(previous);
       setError("Failed to update Tool Configuration");
+    }
+  }
+
+  async function handleConnectGithub() {
+    if (!activeAgent) return;
+    try {
+      const connectedApp = await completeGithubConnectedApp(activeAgent.id);
+      setConnectedApps((current) => {
+        const withoutGithub = current.filter((app) => app.provider !== "github");
+        return [connectedApp, ...withoutGithub];
+      });
+      setToolConfigurations((current) => {
+        const byId = new Map(current.map((toolConfiguration) => [toolConfiguration.id, toolConfiguration]));
+        for (const toolConfiguration of connectedApp.tools) {
+          byId.set(toolConfiguration.id, toolConfiguration);
+        }
+        return [...byId.values()];
+      });
+      setError(null);
+    } catch {
+      setError("Failed to connect GitHub");
     }
   }
 
@@ -825,6 +863,26 @@ export default function App() {
 
                   {activeToolsTab === "apps" ? (
                     <div className="toggle-list">
+                      {connectedApps.map((connectedApp) => (
+                        <div key={connectedApp.appId} className="connected-app-row">
+                          <div>
+                            <strong>{connectedApp.label}</strong>
+                            <small>
+                              {connectedApp.connectedAccount
+                                ? `${connectedApp.connectedAccount.accountLabel} · ${connectedApp.connectedAccount.status}`
+                                : connectedApp.description}
+                            </small>
+                          </div>
+                          {connectedApp.status === "connected" ? (
+                            <span className="status-ok">Connected</span>
+                          ) : (
+                            <button type="button" className="button compact" onClick={handleConnectGithub}>
+                              Connect GitHub
+                            </button>
+                          )}
+                        </div>
+                      ))}
+
                       {toolConfigurations.length > 0 ? (
                         toolConfigurations.map((toolConfiguration) => {
                           const item = appRegistry.find((registryEntry) => registryEntry.id === toolConfiguration.appId);

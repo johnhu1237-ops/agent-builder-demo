@@ -160,6 +160,72 @@ describe("API orchestrator", () => {
       .expect(400);
   });
 
+  it("connects GitHub for an Agent and returns Connected Account state with Tool Configuration modes", async () => {
+    const app = createApiApp({ chatStore: store });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+
+    const emptyResponse = await request(app)
+      .get(`/api/agents/${agent.id}/connected-apps`)
+      .expect(200);
+
+    expect(emptyResponse.body).toEqual([
+      expect.objectContaining({
+        appId: "mock-github",
+        provider: "github",
+        status: "available",
+        connectedAccount: null,
+        tools: []
+      })
+    ]);
+
+    const completeResponse = await request(app)
+      .post(`/api/agents/${agent.id}/connected-apps/github/complete`)
+      .send({ accountLabel: "John's GitHub", externalAccountId: "github-user-1" })
+      .expect(201);
+
+    expect(completeResponse.body).toEqual(
+      expect.objectContaining({
+        appId: "mock-github",
+        provider: "github",
+        status: "connected",
+        connectedAccount: expect.objectContaining({
+          accountLabel: "John's GitHub",
+          externalAccountId: "github-user-1",
+          status: "connected"
+        }),
+        tools: [
+          expect.objectContaining({
+            toolName: "github_create_issue",
+            mode: "ask_each_time"
+          })
+        ]
+      })
+    );
+
+    const toolConfigurationId = completeResponse.body.tools[0].id;
+    await request(app)
+      .put(`/api/agents/${agent.id}/tools/github_create_issue`)
+      .send({ mode: "auto" })
+      .expect(200);
+
+    const connectedResponse = await request(app)
+      .get(`/api/agents/${agent.id}/connected-apps`)
+      .expect(200);
+
+    expect(connectedResponse.body[0]).toEqual(
+      expect.objectContaining({
+        status: "connected",
+        tools: [
+          expect.objectContaining({
+            id: toolConfigurationId,
+            toolName: "github_create_issue",
+            mode: "auto"
+          })
+        ]
+      })
+    );
+  });
+
   it("schedules the agent task and returns a 202 scheduled response without awaiting the runner", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);

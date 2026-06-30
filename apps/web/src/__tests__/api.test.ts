@@ -7,6 +7,8 @@ const {
   updateAgent,
   createChatSession,
   sendChatMessage,
+  completeGithubConnectedApp,
+  listConnectedApps,
   listToolConfigurations,
   updateToolConfigurationMode
 } = await import("../api");
@@ -48,6 +50,39 @@ describe("api client", () => {
               mode: "ask_each_time",
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
+            }
+          ]);
+        }
+        if (url.includes("/connected-apps/github/complete") && options?.method === "POST") {
+          return jsonResponse({
+            appId: "mock-github",
+            provider: "github",
+            label: "GitHub",
+            description: "Connect GitHub issues.",
+            status: "connected",
+            connectedAccount: {
+              id: "connected_account_1",
+              workspaceId: "workspace_demo",
+              appId: "mock-github",
+              accountLabel: "John's GitHub",
+              externalAccountId: "github-user-1",
+              status: "connected",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            },
+            tools: []
+          }, 201);
+        }
+        if (url.includes("/connected-apps")) {
+          return jsonResponse([
+            {
+              appId: "mock-github",
+              provider: "github",
+              label: "GitHub",
+              description: "Connect GitHub issues.",
+              status: "available",
+              connectedAccount: null,
+              tools: []
             }
           ]);
         }
@@ -154,6 +189,19 @@ describe("api client", () => {
 
       expect(updated.mode).toBe("disabled");
       expect(lastFetchBody).toEqual({ mode: "disabled" });
+    });
+
+    it("reads and completes Connected App setup", async () => {
+      const connectedApps = await listConnectedApps("agent_1");
+      expect(connectedApps[0].status).toBe("available");
+
+      const connected = await completeGithubConnectedApp("agent_1");
+
+      expect(connected.status).toBe("connected");
+      expect(lastFetchBody).toEqual({
+        accountLabel: "Demo GitHub",
+        externalAccountId: "demo-user"
+      });
     });
   });
 
