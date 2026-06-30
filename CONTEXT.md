@@ -40,6 +40,10 @@ _Avoid_: Plugin settings, connector permissions.
 A user's authorized connection to an external app account that may be granted to one or more **Agents**. A connected account is distinct from an Agent's **Tool Configuration**, which decides whether and how that Agent can use the account's tools.
 _Avoid_: Agent credential, tool permission.
 
+**Connected App Authorization**:
+The user-facing flow that turns an available external app into a **Connected Account**. Completion of connected app authorization proves the external app account is authorized; it does not by itself decide which **Agents** or tools may use it.
+_Avoid_: OAuth callback when referring to the whole product flow, fake connection.
+
 **Agent Task Lease**:
 A short-lived authorization lease that lets the runtime for one **Agent Task** reach product-controlled execution services such as the MCP permission gateway. The lease belongs to the Agent Task, not to the long-lived **Chat Session**.
 _Avoid_: Session token, sandbox credential.
