@@ -12,10 +12,12 @@ import {
   type ChatMessageRole,
   type ChatSession,
   type ChatSessionDetail,
+  type ConnectedAppState,
   type CreateAgentRequest,
   type RunnerTaskMessage,
   type TaskMessage,
   type ToolConfirmation,
+  type ToolConfiguration as SharedToolConfiguration,
   type ToolConfirmationStatus,
   type UpdateAgentRequest
 } from "@agent-builder/shared";
@@ -156,16 +158,7 @@ export type ConnectedAccount = {
   updatedAt: string;
 };
 
-export type ToolConfiguration = {
-  id: string;
-  agentId: string;
-  connectedAccountId: string;
-  appId: string;
-  toolName: string;
-  mode: ToolConfigurationMode;
-  createdAt: string;
-  updatedAt: string;
-};
+export type ToolConfiguration = SharedToolConfiguration;
 
 export type ToolConfigurationWithAccount = ToolConfiguration & {
   externalAccountId: string;
@@ -218,6 +211,13 @@ const seededConnectorTools: Record<string, string[]> = {
   "mock-github": ["github_create_issue"],
   "mock-slack": ["slack_post_message"],
   "mock-notion": ["notion_create_page"]
+};
+
+const githubConnectedAppTemplate = {
+  appId: "mock-github",
+  provider: "github" as const,
+  label: "GitHub",
+  description: "Connect GitHub issues to Agent Tasks through the product MCP gateway."
 };
 
 type CompleteAgentTaskInput = {
@@ -785,6 +785,37 @@ export class PgChatStore {
     );
 
     return result.rows.map(mapToolConfiguration);
+  }
+
+  async listConnectedAppsForAgent(agentId: string): Promise<ConnectedAppState[]> {
+    const result = await this.pool.query<ConnectedAccountRow>(
+      `
+        select ca.*
+        from connected_accounts ca
+        join connected_account_agents caa on caa.connected_account_id = ca.id
+        where caa.agent_id = $1
+          and ca.app_id = $2
+          and ca.status = 'connected'
+        order by ca.updated_at desc, ca.created_at desc, ca.id asc
+        limit 1
+      `,
+      [agentId, githubConnectedAppTemplate.appId]
+    );
+    const connectedAccount = result.rows[0] ? mapConnectedAccount(result.rows[0]) : null;
+    const tools = connectedAccount
+      ? (await this.listToolConfigurationsForAgent(agentId)).filter(
+          (toolConfiguration) => toolConfiguration.connectedAccountId === connectedAccount.id
+        )
+      : [];
+
+    return [
+      {
+        ...githubConnectedAppTemplate,
+        status: connectedAccount ? "connected" : "available",
+        connectedAccount,
+        tools
+      }
+    ];
   }
 
   async getToolConfigurationForAgentTool(

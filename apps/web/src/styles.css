@@ -812,6 +812,30 @@ textarea:focus {
   flex-direction: column;
 }
 
+.connected-app-row {
+  align-items: center;
+  border-top: 1px solid #e7eaf0;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 14px 0;
+}
+
+.connected-app-row:first-child {
+  border-top: none;
+}
+
+.connected-app-row strong {
+  display: block;
+  font-size: 14px;
+}
+
+.connected-app-row small {
+  color: #676f7b;
+  display: block;
+  font-size: 13px;
+}
+
 .toggle-list .toggle-row {
   border-top: 1px solid #e7eaf0;
 }

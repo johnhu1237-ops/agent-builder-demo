@@ -116,6 +116,40 @@ export type ToolConfirmation = {
   createdAt: string;
 };
 
+export type ConnectedAccount = {
+  id: string;
+  workspaceId: string;
+  appId: string;
+  accountLabel: string;
+  externalAccountId: string;
+  status: "connected" | "disconnected";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ToolConfigurationMode = "auto" | "ask_each_time" | "disabled";
+
+export type ToolConfiguration = {
+  id: string;
+  agentId: string;
+  connectedAccountId: string;
+  appId: string;
+  toolName: string;
+  mode: ToolConfigurationMode;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ConnectedAppState = {
+  appId: string;
+  provider: "github";
+  label: string;
+  description: string;
+  status: "available" | "connected";
+  connectedAccount: ConnectedAccount | null;
+  tools: ToolConfiguration[];
+};
+
 export type ToolConfirmationEvent = {
   confirmation: ToolConfirmation;
 };
