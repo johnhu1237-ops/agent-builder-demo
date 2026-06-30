@@ -18,6 +18,7 @@ import {
   type TaskMessage,
   type ToolConfirmation,
   type ToolConfiguration as SharedToolConfiguration,
+  type ToolConfigurationSyncStatus,
   type ToolConfirmationStatus,
   type UpdateAgentRequest
 } from "@agent-builder/shared";
@@ -105,6 +106,11 @@ type ToolConfigurationRow = {
   app_id: string;
   tool_name: string;
   mode: ToolConfigurationMode;
+  sync_status: ToolConfigurationSyncStatus;
+  sync_error: string | null;
+  sync_version: string | null;
+  last_synced_mode: ToolConfigurationMode | null;
+  last_synced_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -177,6 +183,18 @@ export type UpdateToolConfigurationModeInput = {
   agentId: string;
   toolConfigurationId: string;
   mode: ToolConfigurationMode;
+};
+
+export type CompleteToolConfigurationSyncInput = {
+  agentId: string;
+  toolConfigurationId: string;
+  syncVersion?: string | null;
+};
+
+export type FailToolConfigurationSyncInput = {
+  agentId: string;
+  toolConfigurationId: string;
+  error: string;
 };
 
 export type RecordToolCallAuditInput = {
@@ -338,6 +356,11 @@ function mapToolConfiguration(row: ToolConfigurationRow): ToolConfiguration {
     appId: row.app_id,
     toolName: row.tool_name,
     mode: row.mode,
+    syncStatus: row.sync_status,
+    syncError: row.sync_error,
+    syncVersion: row.sync_version,
+    lastSyncedMode: row.last_synced_mode,
+    lastSyncedAt: toIsoString(row.last_synced_at),
     createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
     updatedAt: toIsoString(row.updated_at) ?? new Date(0).toISOString()
   };
@@ -748,9 +771,12 @@ export class PgChatStore {
                 connected_account_id,
                 app_id,
                 tool_name,
-                mode
+                mode,
+                sync_status,
+                last_synced_mode,
+                last_synced_at
               )
-              values ($1, $2, $3, $4, $5, 'ask_each_time')
+              values ($1, $2, $3, $4, $5, 'ask_each_time', 'synced', 'ask_each_time', now())
               on conflict (agent_id, connected_account_id, tool_name) do nothing
             `,
             [nanoid(), agentId, connectedAccount.id, appId, toolName]
@@ -852,12 +878,59 @@ export class PgChatStore {
       `
         update tool_configurations
         set mode = $3,
+            sync_status = 'syncing',
+            sync_error = null,
             updated_at = now()
         where id = $1
           and agent_id = $2
         returning *
       `,
       [input.toolConfigurationId, input.agentId, input.mode]
+    );
+
+    if (!result.rows[0]) {
+      throw new Error(`Tool Configuration not found: ${input.toolConfigurationId}`);
+    }
+
+    return mapToolConfiguration(result.rows[0]);
+  }
+
+  async markToolConfigurationSyncSucceeded(input: CompleteToolConfigurationSyncInput): Promise<ToolConfiguration> {
+    const result = await this.pool.query<ToolConfigurationRow>(
+      `
+        update tool_configurations
+        set sync_status = 'synced',
+            sync_error = null,
+            sync_version = $3,
+            last_synced_mode = mode,
+            last_synced_at = now(),
+            updated_at = now()
+        where id = $1
+          and agent_id = $2
+        returning *
+      `,
+      [input.toolConfigurationId, input.agentId, input.syncVersion ?? null]
+    );
+
+    if (!result.rows[0]) {
+      throw new Error(`Tool Configuration not found: ${input.toolConfigurationId}`);
+    }
+
+    return mapToolConfiguration(result.rows[0]);
+  }
+
+  async markToolConfigurationSyncFailed(input: FailToolConfigurationSyncInput): Promise<ToolConfiguration> {
+    const result = await this.pool.query<ToolConfigurationRow>(
+      `
+        update tool_configurations
+        set sync_status = 'sync_failed',
+            sync_error = $3,
+            updated_at = now()
+        where id = $1
+          and agent_id = $2
+        returning *
+      `,
+      [input.toolConfigurationId, input.agentId, input.error]
     );
 
     if (!result.rows[0]) {

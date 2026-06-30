@@ -125,7 +125,11 @@ describe("API orchestrator", () => {
   });
 
   it("reads and updates Tool Configuration for an Agent", async () => {
-    const app = createApiApp({ chatStore: store });
+    const syncDeferred = createDeferred<{ syncVersion: string }>();
+    const arcadeToolConfigurationSyncer = {
+      syncToolConfiguration: vi.fn().mockReturnValue(syncDeferred.promise)
+    };
+    const app = createApiApp({ chatStore: store, arcadeToolConfigurationSyncer });
     const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
@@ -148,16 +152,112 @@ describe("API orchestrator", () => {
     ]);
 
     const toolConfigurationId = listResponse.body[0].id;
-    const updateResponse = await request(app)
+    const updatePromise = request(app)
       .patch(`/api/agents/${agent.id}/tool-configurations/${toolConfigurationId}`)
       .send({ mode: "disabled" })
       .expect(200);
+    const updateSettled = updatePromise.then((response) => response);
 
-    expect(updateResponse.body).toEqual(expect.objectContaining({ id: toolConfigurationId, mode: "disabled" }));
+    await vi.waitFor(async () => {
+      const syncingResponse = await request(app)
+        .get(`/api/agents/${agent.id}/tool-configurations`)
+        .expect(200);
+      expect(syncingResponse.body[0]).toEqual(
+        expect.objectContaining({
+          id: toolConfigurationId,
+          mode: "disabled",
+          syncStatus: "syncing"
+        })
+      );
+    });
+    expect(arcadeToolConfigurationSyncer.syncToolConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: agent.id,
+        toolConfigurationId,
+        toolName: "github_create_issue",
+        desiredMode: "disabled",
+        connectedAccountExternalId: "github-user-1"
+      })
+    );
+
+    syncDeferred.resolve({ syncVersion: "arcade-sync-1" });
+    const updateResponse = await updateSettled;
+
+    expect(updateResponse.body).toEqual(
+      expect.objectContaining({
+        id: toolConfigurationId,
+        mode: "disabled",
+        syncStatus: "synced",
+        syncVersion: "arcade-sync-1",
+        lastSyncedMode: "disabled",
+        syncError: null
+      })
+    );
     await request(app)
       .patch(`/api/agents/${agent.id}/tool-configurations/${toolConfigurationId}`)
       .send({ mode: "enabled" })
       .expect(400);
+  });
+
+  it("marks failed Tool Configuration syncs and recovers on a later successful update", async () => {
+    const arcadeToolConfigurationSyncer = {
+      syncToolConfiguration: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Arcade gateway unavailable"))
+        .mockResolvedValueOnce({ syncVersion: "arcade-sync-2" })
+    };
+    const app = createApiApp({ chatStore: store, arcadeToolConfigurationSyncer });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "mock-github",
+      accountLabel: "Mock GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
+
+    const failedResponse = await request(app)
+      .patch(`/api/agents/${agent.id}/tool-configurations/${toolConfiguration.id}`)
+      .send({ mode: "disabled" })
+      .expect(200);
+
+    expect(failedResponse.body).toEqual(
+      expect.objectContaining({
+        id: toolConfiguration.id,
+        mode: "disabled",
+        syncStatus: "sync_failed",
+        syncError: "Arcade gateway unavailable",
+        lastSyncedMode: "ask_each_time"
+      })
+    );
+
+    const policyResponse = await request(app)
+      .get(`/api/agents/${agent.id}/tool-configurations`)
+      .expect(200);
+    expect(policyResponse.body[0]).toEqual(
+      expect.objectContaining({
+        mode: "disabled",
+        syncStatus: "sync_failed"
+      })
+    );
+
+    const recoveredResponse = await request(app)
+      .put(`/api/agents/${agent.id}/tools/github_create_issue`)
+      .send({ mode: "auto" })
+      .expect(200);
+
+    expect(recoveredResponse.body).toEqual(
+      expect.objectContaining({
+        id: toolConfiguration.id,
+        mode: "auto",
+        syncStatus: "synced",
+        syncError: null,
+        syncVersion: "arcade-sync-2",
+        lastSyncedMode: "auto"
+      })
+    );
+    expect(arcadeToolConfigurationSyncer.syncToolConfiguration).toHaveBeenCalledTimes(2);
   });
 
   it("connects GitHub for an Agent and returns Connected Account state with Tool Configuration modes", async () => {

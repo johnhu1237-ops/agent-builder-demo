@@ -25,10 +25,15 @@ import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
 import { decryptApiKey, validateEncryptionKey } from "./encryption";
 import { TaskEventBroadcaster } from "./task-events";
 import { ArcadeApiToolExecutor, type ExternalToolExecutor } from "./external-tool-executor";
+import {
+  NoopArcadeToolConfigurationSyncer,
+  type ArcadeToolConfigurationSyncer
+} from "./arcade-tool-configuration-syncer";
 
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
   externalToolExecutor?: ExternalToolExecutor;
+  arcadeToolConfigurationSyncer?: ArcadeToolConfigurationSyncer;
   toolConfirmationTimeoutMs?: number;
 };
 
@@ -268,6 +273,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
       createHttpRunnerClient(process.env.RUNNER_BASE_URL ?? "http://localhost:4101").runAgentTask
   };
   const externalToolExecutor = deps.externalToolExecutor ?? new ArcadeApiToolExecutor();
+  const arcadeToolConfigurationSyncer =
+    deps.arcadeToolConfigurationSyncer ?? new NoopArcadeToolConfigurationSyncer();
   const toolConfirmationTimeoutMs = deps.toolConfirmationTimeoutMs ?? 3 * 60 * 1000;
   const toolConfirmationWaiters = new Map<string, (confirmation: ToolConfirmation) => void>();
 
@@ -316,6 +323,45 @@ export function createApiApp(deps: ApiDependencies = {}) {
         resolve(resolvedConfirmation);
       });
     });
+  }
+
+  async function updateToolConfigurationModeAndSync(input: {
+    agentId: string;
+    toolConfigurationId: string;
+    mode: "auto" | "ask_each_time" | "disabled";
+  }): Promise<ToolConfiguration> {
+    const syncing = await chatStore.updateToolConfigurationMode(input);
+    const toolConfiguration = await chatStore.getToolConfigurationForAgentTool(input.agentId, syncing.toolName);
+    if (!toolConfiguration || toolConfiguration.id !== input.toolConfigurationId) {
+      return chatStore.markToolConfigurationSyncFailed({
+        agentId: input.agentId,
+        toolConfigurationId: input.toolConfigurationId,
+        error: "Tool Configuration account binding was not found"
+      });
+    }
+
+    try {
+      const result = await arcadeToolConfigurationSyncer.syncToolConfiguration({
+        agentId: toolConfiguration.agentId,
+        toolConfigurationId: toolConfiguration.id,
+        connectedAccountId: toolConfiguration.connectedAccountId,
+        connectedAccountExternalId: toolConfiguration.externalAccountId,
+        appId: toolConfiguration.appId,
+        toolName: toolConfiguration.toolName,
+        desiredMode: toolConfiguration.mode
+      });
+      return await chatStore.markToolConfigurationSyncSucceeded({
+        agentId: input.agentId,
+        toolConfigurationId: input.toolConfigurationId,
+        syncVersion: result.syncVersion ?? null
+      });
+    } catch (error) {
+      return await chatStore.markToolConfigurationSyncFailed({
+        agentId: input.agentId,
+        toolConfigurationId: input.toolConfigurationId,
+        error: error instanceof Error ? error.message : "Arcade Tool Configuration sync failed"
+      });
+    }
   }
 
   app.get("/health", (_req, res) => {
@@ -453,7 +499,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
     }
 
     try {
-      const updated = await chatStore.updateToolConfigurationMode({
+      const updated = await updateToolConfigurationModeAndSync({
         agentId: req.params.id,
         toolConfigurationId: req.params.toolConfigurationId,
         mode: mode as "auto" | "ask_each_time" | "disabled"
@@ -480,7 +526,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
     }
 
     try {
-      const updated = await chatStore.updateToolConfigurationMode({
+      const updated = await updateToolConfigurationModeAndSync({
         agentId: req.params.id,
         toolConfigurationId: toolConfiguration.id,
         mode: mode as "auto" | "ask_each_time" | "disabled"

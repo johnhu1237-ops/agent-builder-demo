@@ -706,6 +706,11 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
         app_id text not null,
         tool_name text not null,
         mode text not null check (mode in ('auto', 'ask_each_time', 'disabled')),
+        sync_status text not null default 'synced' check (sync_status in ('syncing', 'synced', 'sync_failed')),
+        sync_error text,
+        sync_version text,
+        last_synced_mode text check (last_synced_mode in ('auto', 'ask_each_time', 'disabled')),
+        last_synced_at timestamptz,
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now(),
         unique (agent_id, connected_account_id, tool_name)
@@ -776,6 +781,64 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
       on tool_confirmations(chat_session_id, status)
     `
   );
+
+  await addColumnIfNeeded(
+    db,
+    "tool_configurations",
+    "sync_status",
+    `
+    alter table tool_configurations
+    add column if not exists sync_status text not null default 'synced' check (sync_status in ('syncing', 'synced', 'sync_failed'))
+  `
+  );
+
+  await addColumnIfNeeded(
+    db,
+    "tool_configurations",
+    "sync_error",
+    `
+    alter table tool_configurations
+    add column if not exists sync_error text
+  `
+  );
+
+  await addColumnIfNeeded(
+    db,
+    "tool_configurations",
+    "sync_version",
+    `
+    alter table tool_configurations
+    add column if not exists sync_version text
+  `
+  );
+
+  await addColumnIfNeeded(
+    db,
+    "tool_configurations",
+    "last_synced_mode",
+    `
+    alter table tool_configurations
+    add column if not exists last_synced_mode text check (last_synced_mode in ('auto', 'ask_each_time', 'disabled'))
+  `
+  );
+
+  await addColumnIfNeeded(
+    db,
+    "tool_configurations",
+    "last_synced_at",
+    `
+    alter table tool_configurations
+    add column if not exists last_synced_at timestamptz
+  `
+  );
+
+  await db.query(`
+    update tool_configurations
+    set last_synced_mode = mode,
+        last_synced_at = coalesce(last_synced_at, updated_at)
+    where sync_status = 'synced'
+      and last_synced_mode is null
+  `);
 
   await addColumnIfNeeded(
     db,
