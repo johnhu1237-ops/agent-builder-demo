@@ -204,6 +204,72 @@ describe("API orchestrator", () => {
       .expect(400);
   });
 
+  it("does not create a GitHub Connected Account when Arcade reports the demo user is not authorized", async () => {
+    const connectedAppAuthorizationClient = {
+      authorize: vi.fn(),
+      isAuthorized: vi.fn().mockResolvedValue(false)
+    };
+    const app = createApiApp({ chatStore: store, connectedAppAuthorizationClient });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+
+    const completeResponse = await request(app)
+      .post(`/api/agents/${agent.id}/connected-apps/github/complete`)
+      .send({ accountLabel: "Forged GitHub", externalAccountId: "attacker" })
+      .expect(409);
+
+    expect(completeResponse.body.error).toMatch(/not authorized/i);
+    expect(connectedAppAuthorizationClient.isAuthorized).toHaveBeenCalledWith({
+      provider: "github",
+      userId: "demo-user",
+      toolName: "Github.ListIssues"
+    });
+
+    const connectedAppsResponse = await request(app)
+      .get(`/api/agents/${agent.id}/connected-apps`)
+      .expect(200);
+    expect(connectedAppsResponse.body[0]).toEqual(
+      expect.objectContaining({
+        provider: "github",
+        status: "available",
+        connectedAccount: null,
+        tools: []
+      })
+    );
+
+    const toolConfigurationsResponse = await request(app)
+      .get(`/api/agents/${agent.id}/tool-configurations`)
+      .expect(200);
+    expect(toolConfigurationsResponse.body).toEqual([]);
+  });
+
+  it("starts GitHub Connected App Authorization through Arcade with the frontend callback return URL", async () => {
+    const connectedAppAuthorizationClient = {
+      authorize: vi.fn().mockResolvedValue({ authorizationUrl: "https://arcade.dev/authorize/github/demo" }),
+      isAuthorized: vi.fn()
+    };
+    const app = createApiApp({ chatStore: store, connectedAppAuthorizationClient });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const returnUrl = `http://localhost:5173/oauth/arcade/github/callback?agentId=${agent.id}`;
+
+    const authorizeResponse = await request(app)
+      .post(`/api/agents/${agent.id}/connected-apps/github/authorize`)
+      .send({ returnUrl })
+      .expect(202);
+
+    expect(connectedAppAuthorizationClient.authorize).toHaveBeenCalledWith({
+      provider: "github",
+      userId: "demo-user",
+      toolName: "Github.ListIssues",
+      returnUrl
+    });
+    expect(authorizeResponse.body).toEqual({
+      provider: "github",
+      arcadeUserId: "demo-user",
+      authorizationUrl: "https://arcade.dev/authorize/github/demo",
+      status: "authorization_required"
+    });
+  });
+
   it("marks failed Tool Configuration syncs and recovers on a later successful update", async () => {
     const arcadeToolConfigurationSyncer = {
       syncToolConfiguration: vi
@@ -266,7 +332,11 @@ describe("API orchestrator", () => {
   });
 
   it("connects GitHub for an Agent and returns Connected Account state with Tool Configuration modes", async () => {
-    const app = createApiApp({ chatStore: store });
+    const connectedAppAuthorizationClient = {
+      authorize: vi.fn(),
+      isAuthorized: vi.fn().mockResolvedValue(true)
+    };
+    const app = createApiApp({ chatStore: store, connectedAppAuthorizationClient });
     const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
 
     const emptyResponse = await request(app)
@@ -294,8 +364,8 @@ describe("API orchestrator", () => {
         provider: "github",
         status: "connected",
         connectedAccount: expect.objectContaining({
-          accountLabel: "John's GitHub",
-          externalAccountId: "github-user-1",
+          accountLabel: "GitHub via Arcade",
+          externalAccountId: "demo-user",
           status: "connected"
         }),
         tools: expect.arrayContaining([

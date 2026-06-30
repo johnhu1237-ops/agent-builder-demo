@@ -29,11 +29,17 @@ import {
   NoopArcadeToolConfigurationSyncer,
   type ArcadeToolConfigurationSyncer
 } from "./arcade-tool-configuration-syncer";
+import {
+  ArcadeConnectedAppAuthorizationClient,
+  githubConnectedAppProvider,
+  type ConnectedAppAuthorizationClient
+} from "./connected-app-authorization";
 
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
   externalToolExecutor?: ExternalToolExecutor;
   arcadeToolConfigurationSyncer?: ArcadeToolConfigurationSyncer;
+  connectedAppAuthorizationClient?: ConnectedAppAuthorizationClient;
   toolConfirmationTimeoutMs?: number;
 };
 
@@ -50,6 +56,15 @@ function publicAgent(agent: { encryptedApiKey?: string | null; spec: AgentSpec; 
 
 function stableError(message: string) {
   return { error: message };
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function bearerToken(req: express.Request): string | null {
@@ -286,6 +301,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
   const externalToolExecutor = deps.externalToolExecutor ?? new ArcadeApiToolExecutor();
   const arcadeToolConfigurationSyncer =
     deps.arcadeToolConfigurationSyncer ?? new NoopArcadeToolConfigurationSyncer();
+  const connectedAppAuthorizationClient =
+    deps.connectedAppAuthorizationClient ?? new ArcadeConnectedAppAuthorizationClient();
   const toolConfirmationTimeoutMs = deps.toolConfirmationTimeoutMs ?? 3 * 60 * 1000;
   const toolConfirmationWaiters = new Map<string, (confirmation: ToolConfirmation) => void>();
 
@@ -466,11 +483,35 @@ export function createApiApp(deps: ApiDependencies = {}) {
       res.status(404).json(stableError("Agent not found"));
       return;
     }
+    const returnUrl = String(req.body?.returnUrl ?? "").trim();
+    if (!isHttpUrl(returnUrl)) {
+      res.status(400).json(stableError("returnUrl must be an HTTP(S) URL"));
+      return;
+    }
+
+    let authorization: { authorizationUrl: string };
+    try {
+      authorization = await connectedAppAuthorizationClient.authorize({
+        provider: githubConnectedAppProvider.provider,
+        userId: githubConnectedAppProvider.arcadeUserId,
+        toolName: githubConnectedAppProvider.authorizationProbeTool,
+        returnUrl
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Arcade authorization failed";
+      res.status(502).json(stableError(message));
+      return;
+    }
+    if (!authorization.authorizationUrl) {
+      res.status(502).json(stableError("Arcade did not provide a GitHub authorization URL"));
+      return;
+    }
+
     res.status(202).json({
-      provider: "github",
-      arcadeUserId: "demo-user",
-      authorizationUrl: null,
-      status: "ready_for_demo_completion"
+      provider: githubConnectedAppProvider.provider,
+      arcadeUserId: githubConnectedAppProvider.arcadeUserId,
+      authorizationUrl: authorization.authorizationUrl,
+      status: "authorization_required"
     });
   });
 
@@ -481,11 +522,28 @@ export function createApiApp(deps: ApiDependencies = {}) {
       return;
     }
 
+    let isAuthorized: boolean;
+    try {
+      isAuthorized = await connectedAppAuthorizationClient.isAuthorized({
+        provider: githubConnectedAppProvider.provider,
+        userId: githubConnectedAppProvider.arcadeUserId,
+        toolName: githubConnectedAppProvider.authorizationProbeTool
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Arcade authorization check failed";
+      res.status(502).json(stableError(message));
+      return;
+    }
+    if (!isAuthorized) {
+      res.status(409).json(stableError("GitHub is not authorized in Arcade for the demo user"));
+      return;
+    }
+
     await chatStore.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: String(req.body?.accountLabel ?? "Demo GitHub").trim() || "Demo GitHub",
-      externalAccountId: String(req.body?.externalAccountId ?? "demo-user").trim() || "demo-user",
+      appId: githubConnectedAppProvider.appId,
+      accountLabel: githubConnectedAppProvider.connectedAccountLabel,
+      externalAccountId: githubConnectedAppProvider.connectedAccountExternalId,
       agentIds: [req.params.id]
     });
 

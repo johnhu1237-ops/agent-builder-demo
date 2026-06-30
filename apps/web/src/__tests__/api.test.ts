@@ -7,6 +7,7 @@ const {
   updateAgent,
   createChatSession,
   sendChatMessage,
+  startGithubConnectedAppAuthorization,
   completeGithubConnectedApp,
   listConnectedApps,
   listToolConfigurations,
@@ -52,6 +53,14 @@ describe("api client", () => {
               updatedAt: new Date().toISOString()
             }
           ]);
+        }
+        if (url.includes("/connected-apps/github/authorize") && options?.method === "POST") {
+          return jsonResponse({
+            provider: "github",
+            arcadeUserId: "demo-user",
+            authorizationUrl: "https://arcade.dev/authorize/github/demo",
+            status: "authorization_required"
+          }, 202);
         }
         if (url.includes("/connected-apps/github/complete") && options?.method === "POST") {
           return jsonResponse({
@@ -191,17 +200,23 @@ describe("api client", () => {
       expect(lastFetchBody).toEqual({ mode: "disabled" });
     });
 
-    it("reads and completes Connected App setup", async () => {
+    it("starts and completes GitHub Connected App Authorization", async () => {
       const connectedApps = await listConnectedApps("agent_1");
       expect(connectedApps[0].status).toBe("available");
+
+      const authorization = await startGithubConnectedAppAuthorization(
+        "agent_1",
+        "http://localhost:5173/oauth/arcade/github/callback?agentId=agent_1"
+      );
+      expect(authorization.authorizationUrl).toBe("https://arcade.dev/authorize/github/demo");
+      expect(lastFetchBody).toEqual({
+        returnUrl: "http://localhost:5173/oauth/arcade/github/callback?agentId=agent_1"
+      });
 
       const connected = await completeGithubConnectedApp("agent_1");
 
       expect(connected.status).toBe("connected");
-      expect(lastFetchBody).toEqual({
-        accountLabel: "Demo GitHub",
-        externalAccountId: "demo-user"
-      });
+      expect(lastFetchBody).toEqual({});
     });
   });
 

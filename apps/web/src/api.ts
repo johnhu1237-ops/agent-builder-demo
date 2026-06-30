@@ -61,13 +61,25 @@ export async function listConnectedApps(agentId: string): Promise<ConnectedAppSt
   return requestJson<ConnectedAppState[]>(`/api/agents/${encodeURIComponent(agentId)}/connected-apps`);
 }
 
+export async function startGithubConnectedAppAuthorization(
+  agentId: string,
+  returnUrl: string
+): Promise<{
+  provider: "github";
+  arcadeUserId: string;
+  authorizationUrl: string;
+  status: "authorization_required";
+}> {
+  return requestJson(`/api/agents/${encodeURIComponent(agentId)}/connected-apps/github/authorize`, {
+    method: "POST",
+    body: JSON.stringify({ returnUrl })
+  });
+}
+
 export async function completeGithubConnectedApp(agentId: string): Promise<ConnectedAppState> {
   return requestJson<ConnectedAppState>(`/api/agents/${encodeURIComponent(agentId)}/connected-apps/github/complete`, {
     method: "POST",
-    body: JSON.stringify({
-      accountLabel: "Demo GitHub",
-      externalAccountId: "demo-user"
-    })
+    body: JSON.stringify({})
   });
 }
 
