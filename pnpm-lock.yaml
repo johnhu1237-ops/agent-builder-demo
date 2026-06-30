@@ -41,6 +41,9 @@ importers:
       '@agent-builder/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@arcadeai/arcadejs':
+        specifier: ^2.4.1
+        version: 2.4.1
       cors:
         specifier: ^2.8.5
         version: 2.8.6
@@ -182,6 +185,10 @@ packages:
 
   '@adobe/css-tools@4.5.0':
     resolution: {integrity: sha512-6OzddxPio9UiWTCemp4N8cYLV2ZN1ncRnV1cVGtve7dhPOtRkleRyx32GQCYSwDYgaHU3USMm84tNsvKzRCa1Q==}
+
+  '@arcadeai/arcadejs@2.4.1':
+    resolution: {integrity: sha512-DLpvvDBvRNjzVmFYJ+upPrUJ8YRBoGWqPfzhuFp2+lh5Shxm0l9qLwe1Ah4pKvuCatU7TLOOTkFpICitTuuJeQ==}
+    hasBin: true
 
   '@asamuzakjp/css-color@3.2.0':
     resolution: {integrity: sha512-K1A6z8tS3XsmCMM86xoWdn7Fkdn9m6RSVtocUrJYIwZnFVkng/PvkEoWtOWmP+Scc6saYWHWZYbndEEXxl24jw==}
@@ -2485,6 +2492,8 @@ packages:
 snapshots:
 
   '@adobe/css-tools@4.5.0': {}
+
+  '@arcadeai/arcadejs@2.4.1': {}
 
   '@asamuzakjp/css-color@3.2.0':
     dependencies:
