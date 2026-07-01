@@ -34,7 +34,7 @@ describe("api client", () => {
               id: "tool_config_1",
               agentId: "agent_1",
               connectedAccountId: "connected_account_1",
-              appId: "mock-github",
+              appId: "github",
               toolName: "github_create_issue",
               mode: "disabled",
               createdAt: new Date().toISOString(),
@@ -46,7 +46,7 @@ describe("api client", () => {
               id: "tool_config_1",
               agentId: "agent_1",
               connectedAccountId: "connected_account_1",
-              appId: "mock-github",
+              appId: "github",
               toolName: "github_create_issue",
               mode: "ask_each_time",
               createdAt: new Date().toISOString(),
@@ -64,7 +64,7 @@ describe("api client", () => {
         }
         if (url.includes("/connected-apps/github/complete") && options?.method === "POST") {
           return jsonResponse({
-            appId: "mock-github",
+            appId: "github",
             provider: "github",
             label: "GitHub",
             description: "Connect GitHub issues.",
@@ -72,7 +72,7 @@ describe("api client", () => {
             connectedAccount: {
               id: "connected_account_1",
               workspaceId: "workspace_demo",
-              appId: "mock-github",
+              appId: "github",
               accountLabel: "John's GitHub",
               externalAccountId: "github-user-1",
               status: "connected",
@@ -85,7 +85,7 @@ describe("api client", () => {
         if (url.includes("/connected-apps")) {
           return jsonResponse([
             {
-              appId: "mock-github",
+              appId: "github",
               provider: "github",
               label: "GitHub",
               description: "Connect GitHub issues.",

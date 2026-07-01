@@ -764,6 +764,18 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
     `
   );
 
+  await db.query(`
+    update connected_accounts
+    set app_id = 'github'
+    where app_id = 'mock-github'
+  `);
+
+  await db.query(`
+    update tool_configurations
+    set app_id = 'github'
+    where app_id = 'mock-github'
+  `);
+
   await createNonUniqueIndexIfNeeded(
     db,
     "idx_agent_task_leases_agent_task_id",

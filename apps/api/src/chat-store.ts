@@ -226,13 +226,13 @@ export type CreateToolConfirmationInput = {
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
 const toolConfigurationModes = new Set<ToolConfigurationMode>(["auto", "ask_each_time", "disabled"]);
 const seededConnectorTools: Record<string, string[]> = {
-  "mock-github": ["github_search_issues", "github_create_issue"],
+  "github": ["github_search_issues", "github_create_issue"],
   "mock-slack": ["slack_post_message"],
   "mock-notion": ["notion_create_page"]
 };
 
 const githubConnectedAppTemplate = {
-  appId: "mock-github",
+  appId: "github",
   provider: "github" as const,
   label: "GitHub",
   description: "Connect GitHub issues to Agent Tasks through the product MCP gateway."

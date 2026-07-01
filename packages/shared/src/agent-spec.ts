@@ -56,7 +56,7 @@ export const defaultAgentSpec: AgentSpec = {
     apiKeyRef: "runtime-only"
   },
   apps: [
-    { id: "mock-github", enabled: false, mode: "configuration-only" },
+    { id: "github", enabled: false, mode: "configuration-only" },
     { id: "mock-slack", enabled: false, mode: "configuration-only" },
     { id: "mock-notion", enabled: false, mode: "configuration-only" }
   ],
@@ -73,37 +73,54 @@ export type ValidationResult =
   | { success: true; data: AgentSpec }
   | { success: false; error: Error };
 
+function normalizeAppId(id: string): string {
+  return id === "mock-github" ? "github" : id;
+}
+
+function normalizeAgentSpec(spec: AgentSpec): AgentSpec {
+  return {
+    ...spec,
+    apps: spec.apps.map((app) => ({
+      ...app,
+      id: normalizeAppId(app.id)
+    }))
+  };
+}
+
 export function validateAgentSpec(input: unknown): ValidationResult {
   const parsed = agentSpecSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: new Error(parsed.error.message) };
   }
 
-  for (const app of parsed.data.apps) {
+  const normalized = normalizeAgentSpec(parsed.data);
+
+  for (const app of normalized.apps) {
     if (!findRegistryItem(appRegistry, app.id)) {
       return { success: false, error: new Error(`Unknown app id: ${app.id}`) };
     }
   }
 
-  for (const skill of parsed.data.skills) {
+  for (const skill of normalized.skills) {
     if (!findRegistryItem(skillRegistry, skill.id)) {
       return { success: false, error: new Error(`Unknown skill id: ${skill.id}`) };
     }
   }
 
-  for (const ability of parsed.data.abilities) {
+  for (const ability of normalized.abilities) {
     if (!findRegistryItem(abilityRegistry, ability.id)) {
       return { success: false, error: new Error(`Unknown ability id: ${ability.id}`) };
     }
   }
 
-  return { success: true, data: parsed.data };
+  return { success: true, data: normalized };
 }
 
 export function exportAgentSpec(spec: AgentSpec): AgentSpec {
   const { apiKey: _apiKey, ...modelWithoutKey } = spec.model;
+  const normalized = normalizeAgentSpec(spec);
   return {
-    ...spec,
+    ...normalized,
     model: {
       ...modelWithoutKey,
       apiKeyRef: "runtime-only"

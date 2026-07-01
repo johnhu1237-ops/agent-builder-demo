@@ -31,6 +31,63 @@ describe("PgChatStore", () => {
     await expect(runChatMigrations(pool)).resolves.toBeUndefined();
   });
 
+  it("migrates existing GitHub Connected Account and Tool Configuration rows to the github app id", async () => {
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    await pool.query(
+      `
+        insert into connected_accounts (
+          id,
+          workspace_id,
+          app_id,
+          account_label,
+          external_account_id,
+          status
+        )
+        values ('legacy-github-account', 'workspace_demo', 'mock-github', 'GitHub via Arcade', 'demo-user', 'connected')
+      `
+    );
+    await pool.query(
+      `
+        insert into tool_configurations (
+          id,
+          agent_id,
+          connected_account_id,
+          app_id,
+          tool_name,
+          mode,
+          sync_status,
+          last_synced_mode,
+          last_synced_at
+        )
+        values (
+          'legacy-github-search-config',
+          $1,
+          'legacy-github-account',
+          'mock-github',
+          'github_search_issues',
+          'ask_each_time',
+          'synced',
+          'ask_each_time',
+          now()
+        )
+      `,
+      [agent.id]
+    );
+
+    await runChatMigrations(pool);
+    await runChatMigrations(pool);
+
+    const connectedAccounts = await pool.query<{ app_id: string }>(
+      `select app_id from connected_accounts where id = 'legacy-github-account'`
+    );
+    const toolConfigurations = await pool.query<{ app_id: string }>(
+      `select app_id from tool_configurations where id = 'legacy-github-search-config'`
+    );
+
+    expect(connectedAccounts.rows).toEqual([{ app_id: "github" }]);
+    expect(toolConfigurations.rows).toEqual([{ app_id: "github" }]);
+  });
+
   describe("v0.1.3 multi-agent migration", () => {
     it("creates the agents table", async () => {
       const result = await pool.query<{ table_name: string }>(`
@@ -1371,27 +1428,27 @@ describe("PgChatStore", () => {
 
       const connectedAccount = await store.createConnectedAccount({
         workspaceId: "workspace_demo",
-        appId: "mock-github",
-        accountLabel: "Mock GitHub",
+        appId: "github",
+        accountLabel: "GitHub",
         externalAccountId: "github-user-1",
         agentIds: [agent.id]
       });
 
       const toolConfigurations = await store.listToolConfigurationsForAgent(agent.id);
 
-      expect(connectedAccount.appId).toBe("mock-github");
+      expect(connectedAccount.appId).toBe("github");
       expect(toolConfigurations).toEqual([
         expect.objectContaining({
           agentId: agent.id,
           connectedAccountId: connectedAccount.id,
-          appId: "mock-github",
+          appId: "github",
           toolName: "github_create_issue",
           mode: "ask_each_time"
         }),
         expect.objectContaining({
           agentId: agent.id,
           connectedAccountId: connectedAccount.id,
-          appId: "mock-github",
+          appId: "github",
           toolName: "github_search_issues",
           mode: "ask_each_time"
         })
@@ -1404,8 +1461,8 @@ describe("PgChatStore", () => {
       const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
       await store.createConnectedAccount({
         workspaceId: "workspace_demo",
-        appId: "mock-github",
-        accountLabel: "Mock GitHub",
+        appId: "github",
+        accountLabel: "GitHub",
         externalAccountId: "github-user-1",
         agentIds: [agent.id]
       });

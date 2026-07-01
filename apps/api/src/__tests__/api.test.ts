@@ -133,8 +133,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -145,12 +145,12 @@ describe("API orchestrator", () => {
 
     expect(listResponse.body).toEqual([
       expect.objectContaining({
-        appId: "mock-github",
+        appId: "github",
         toolName: "github_create_issue",
         mode: "ask_each_time"
       }),
       expect.objectContaining({
-        appId: "mock-github",
+        appId: "github",
         toolName: "github_search_issues",
         mode: "ask_each_time"
       })
@@ -344,8 +344,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -408,7 +408,7 @@ describe("API orchestrator", () => {
 
     expect(emptyResponse.body).toEqual([
       expect.objectContaining({
-        appId: "mock-github",
+        appId: "github",
         provider: "github",
         status: "available",
         connectedAccount: null,
@@ -423,7 +423,7 @@ describe("API orchestrator", () => {
 
     expect(completeResponse.body).toEqual(
       expect.objectContaining({
-        appId: "mock-github",
+        appId: "github",
         provider: "github",
         status: "connected",
         connectedAccount: expect.objectContaining({
@@ -862,8 +862,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     const connectedAccount = await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -1060,8 +1060,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -1128,8 +1128,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -1176,7 +1176,7 @@ describe("API orchestrator", () => {
     });
     expect(externalToolExecutor.executeTool).toHaveBeenCalledWith({
       arcadeUserId: "github-user-1",
-      provider: "mock-github",
+      provider: "github",
       mcpToolName: "github_create_issue",
       providerToolName: "github_create_issue",
       args: {
@@ -1205,7 +1205,7 @@ describe("API orchestrator", () => {
         chat_session_id: sessionResponse.body.id,
         agent_id: agent.id,
         connected_account_id: toolConfiguration.connectedAccountId,
-        provider: "mock-github",
+        provider: "github",
         mcp_tool_name: "github_create_issue",
         provider_tool_name: "github_create_issue",
         mode: "auto",
@@ -1235,8 +1235,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -1307,8 +1307,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -1371,8 +1371,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -1420,7 +1420,7 @@ describe("API orchestrator", () => {
     });
     expect(externalToolExecutor.executeTool).toHaveBeenCalledWith({
       arcadeUserId: "github-user-1",
-      provider: "mock-github",
+      provider: "github",
       mcpToolName: "github_create_issue",
       providerToolName: "github_create_issue",
       args: { title: "Needs approval", body: "Use token sk-live-secret-value" }
@@ -1464,8 +1464,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });
@@ -1547,7 +1547,7 @@ describe("API orchestrator", () => {
       chatSessionId: sessionResponse.body.id,
       agentId: agent.id,
       connectedAccountId: toolConfiguration.connectedAccountId,
-      provider: "mock-github",
+      provider: "github",
       mcpToolName: "github_create_issue",
       providerToolName: "github_create_issue",
       args: { title: "Original" },
@@ -1579,8 +1579,8 @@ describe("API orchestrator", () => {
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     await store.createConnectedAccount({
       workspaceId: "workspace_demo",
-      appId: "mock-github",
-      accountLabel: "Mock GitHub",
+      appId: "github",
+      accountLabel: "GitHub",
       externalAccountId: "github-user-1",
       agentIds: [agent.id]
     });

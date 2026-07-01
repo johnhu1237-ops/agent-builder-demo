@@ -37,6 +37,18 @@ describe("Agent Spec validation", () => {
     }
   });
 
+  it("normalizes legacy mock GitHub app ids to the real GitHub app id", () => {
+    const result = validateAgentSpec({
+      ...defaultAgentSpec,
+      apps: [{ id: "mock-github", enabled: true, mode: "configuration-only" }]
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.apps).toEqual([{ id: "github", enabled: true, mode: "configuration-only" }]);
+    }
+  });
+
   it("exports specs without API keys", () => {
     const exported = exportAgentSpec({
       ...defaultAgentSpec,
