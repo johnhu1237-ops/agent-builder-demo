@@ -990,6 +990,10 @@ export function createApiApp(deps: ApiDependencies = {}) {
           providerToolName: toolDefinition.providerToolName,
           args: toolCall.args
         });
+        const executionError =
+          execution.isError === true
+            ? execution.content.find((content) => typeof content.text === "string")?.text ?? "External tool execution failed"
+            : null;
         await chatStore.recordToolCallAudit({
           agentTaskId: lease.agentTaskId,
           chatSessionId: lease.chatSessionId,
@@ -1000,8 +1004,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
           providerToolName: toolDefinition.providerToolName,
           mode: toolConfiguration.mode,
           args: toolCall.args,
-          status: "executed",
-          error: null
+          status: executionError ? "failed" : "executed",
+          error: executionError
         });
         res.json(jsonRpcResult(id, execution));
       } catch (error) {
