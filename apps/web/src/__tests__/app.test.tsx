@@ -128,11 +128,11 @@ beforeEach(() => {
     if (/\/api\/agents\/[^/]+\/tool-configurations\/[^/]+$/.test(url) && method === "PATCH") {
       const body = options?.body ? JSON.parse(options.body as string) : {};
       return jsonResponse({
-        id: "tool_config_1",
+        id: "tool_config_search",
         agentId: "agent_1",
         connectedAccountId: "connected_account_1",
         appId: "github",
-        toolName: "github_create_issue",
+        toolName: "github_search_issues",
         mode: body.mode ?? "disabled",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -170,11 +170,11 @@ beforeEach(() => {
           },
           tools: [
             {
-              id: "tool_config_1",
+              id: "tool_config_search",
               agentId: "agent_1",
               connectedAccountId: "connected_account_1",
               appId: "github",
-              toolName: "github_create_issue",
+              toolName: "github_search_issues",
               mode: "ask_each_time",
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
@@ -205,11 +205,11 @@ beforeEach(() => {
             },
             tools: [
               {
-                id: "tool_config_1",
+                id: "tool_config_search",
                 agentId: "agent_1",
                 connectedAccountId: "connected_account_1",
                 appId: "github",
-                toolName: "github_create_issue",
+                toolName: "github_search_issues",
                 mode: "ask_each_time",
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
@@ -233,11 +233,11 @@ beforeEach(() => {
     if (/\/api\/agents\/[^/]+\/tool-configurations$/.test(url) && method === "GET") {
       return jsonResponse([
         {
-          id: "tool_config_1",
+          id: "tool_config_search",
           agentId: "agent_1",
           connectedAccountId: "connected_account_1",
           appId: "github",
-          toolName: "github_create_issue",
+          toolName: "github_search_issues",
           mode: "ask_each_time",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -399,23 +399,23 @@ describe("multi-agent UI", () => {
     await user.click(agentButton);
     await user.click(await screen.findByRole("tab", { name: "Tools" }));
 
-    const modeSelect = await screen.findByLabelText("GitHub github_create_issue mode");
+    const modeSelect = await screen.findByLabelText("GitHub github_search_issues mode");
     expect(modeSelect).toHaveValue("ask_each_time");
 
-    await user.selectOptions(modeSelect, "disabled");
+    await user.selectOptions(modeSelect, "auto");
 
     await waitFor(() => {
       const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
       const patchCall = calls.find(
         (c) =>
           typeof c[0] === "string" &&
-          c[0].includes("/tool-configurations/tool_config_1") &&
+          c[0].includes("/tool-configurations/tool_config_search") &&
           c[1]?.method === "PATCH"
       );
       expect(patchCall).toBeTruthy();
-      expect(JSON.parse(patchCall![1]!.body as string)).toEqual({ mode: "disabled" });
+      expect(JSON.parse(patchCall![1]!.body as string)).toEqual({ mode: "auto" });
     });
-    expect(modeSelect).toHaveValue("disabled");
+    expect(modeSelect).toHaveValue("auto");
   });
 
   it("starts GitHub authorization without directly completing the Connected App", async () => {
@@ -471,7 +471,7 @@ describe("multi-agent UI", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/GitHub via Arcade · connected/)).toBeInTheDocument();
-      expect(screen.getByLabelText("GitHub github_create_issue mode")).toBeInTheDocument();
+      expect(screen.getByLabelText("GitHub github_search_issues mode")).toBeInTheDocument();
       expect(window.location.pathname).toBe("/");
     });
   });
@@ -527,7 +527,7 @@ describe("multi-agent UI", () => {
     );
     expect(connectedAppsCallIndex).toBeGreaterThanOrEqual(0);
 
-    const modeSelect = await screen.findByLabelText("GitHub github_create_issue mode");
+    const modeSelect = await screen.findByLabelText("GitHub github_search_issues mode");
     await user.selectOptions(modeSelect, "auto");
 
     await waitFor(() => {
@@ -536,7 +536,7 @@ describe("multi-agent UI", () => {
         calls.some(
           ([url, options]) =>
             typeof url === "string" &&
-            url.includes("/tool-configurations/tool_config_1") &&
+            url.includes("/tool-configurations/tool_config_search") &&
             options?.method === "PATCH" &&
             JSON.parse(options.body as string).mode === "auto"
         )
