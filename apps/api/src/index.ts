@@ -120,6 +120,10 @@ function toolsForToolConfigurations(toolConfigurations: ToolConfiguration[]) {
     .map(toMcpTool);
 }
 
+function allowInactiveMcpLeasesForDebug(): boolean {
+  return process.env.NODE_ENV !== "production" && process.env.MCP_GATEWAY_ALLOW_INACTIVE_LEASES === "true";
+}
+
 function statusFromError(message: string): Exclude<AgentTaskStatus, "pending" | "running" | "completed" | "cancelled"> {
   return message.toLowerCase().includes("timed out") ? "timed_out" : "failed";
 }
@@ -811,7 +815,9 @@ export function createApiApp(deps: ApiDependencies = {}) {
       return;
     }
 
-    const lease = await chatStore.validateAgentTaskLease(token);
+    const lease = await chatStore.validateAgentTaskLease(token, {
+      allowInactive: allowInactiveMcpLeasesForDebug()
+    });
     if (!lease) {
       res.status(401).json(stableError("Invalid or expired Agent Task Lease"));
       return;

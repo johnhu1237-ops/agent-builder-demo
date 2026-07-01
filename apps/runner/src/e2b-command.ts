@@ -20,7 +20,7 @@ export function buildCodexCommand(input: E2BCodexCommandInput): string {
   const parts = [
     "codex",
     execArgs,
-    "--full-auto",
+    "--dangerously-bypass-approvals-and-sandbox",
     "--skip-git-repo-check",
     "--json",
     "-c",

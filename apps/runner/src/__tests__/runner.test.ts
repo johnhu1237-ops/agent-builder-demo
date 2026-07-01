@@ -95,7 +95,7 @@ describe("e2b command", () => {
       sessionId: null
     });
 
-    expect(command).toContain("codex exec --full-auto --skip-git-repo-check --json");
+    expect(command).toContain("codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json");
     expect(command).toContain("--model 'gpt-5'");
     expect(command).toContain("-c 'model_provider=agent_builder_openai_compatible'");
     expect(command).toContain("-c 'model_providers.agent_builder_openai_compatible.base_url=https://api.deepseek.com'");
@@ -117,7 +117,9 @@ describe("e2b command", () => {
       sessionId: "codex-session-1"
     });
 
-    expect(command).toContain("exec resume 'codex-session-1' --full-auto --skip-git-repo-check --json");
+    expect(command).toContain(
+      "exec resume 'codex-session-1' --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json"
+    );
     expect(command).not.toContain("-C ");
   });
 });

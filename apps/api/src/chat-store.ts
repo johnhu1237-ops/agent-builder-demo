@@ -1412,7 +1412,10 @@ export class PgChatStore {
     return { id: result.rows[0].id, token };
   }
 
-  async validateAgentTaskLease(token: string): Promise<ValidatedAgentTaskLease | null> {
+  async validateAgentTaskLease(
+    token: string,
+    options?: { allowInactive?: boolean }
+  ): Promise<ValidatedAgentTaskLease | null> {
     const result = await this.pool.query<{
       id: string;
       agent_task_id: string;
@@ -1454,29 +1457,33 @@ export class PgChatStore {
     }
 
     const now = new Date();
-    if (
-      row.status !== "active" ||
-      row.revoked_at != null ||
-      row.issuer !== "agent-builder-api" ||
-      row.audience !== "agent-builder-mcp-gateway" ||
-      new Date(row.expires_at).getTime() <= now.getTime() ||
-      new Date(row.absolute_expires_at).getTime() <= now.getTime()
-    ) {
+    if (row.issuer !== "agent-builder-api" || row.audience !== "agent-builder-mcp-gateway") {
       return null;
     }
 
-    const renewedIdleExpiry = new Date(now.getTime() + 15 * 60 * 1000);
-    const absoluteExpiry = new Date(row.absolute_expires_at);
-    const nextExpiresAt = renewedIdleExpiry.getTime() < absoluteExpiry.getTime() ? renewedIdleExpiry : absoluteExpiry;
-    await this.pool.query(
-      `
-        update agent_task_leases
-        set expires_at = $2,
-            updated_at = now()
-        where id = $1
-      `,
-      [row.id, nextExpiresAt]
-    );
+    const inactive =
+      row.status !== "active" ||
+      row.revoked_at != null ||
+      new Date(row.expires_at).getTime() <= now.getTime() ||
+      new Date(row.absolute_expires_at).getTime() <= now.getTime();
+    if (inactive && !options?.allowInactive) {
+      return null;
+    }
+
+    if (!inactive) {
+      const renewedIdleExpiry = new Date(now.getTime() + 15 * 60 * 1000);
+      const absoluteExpiry = new Date(row.absolute_expires_at);
+      const nextExpiresAt = renewedIdleExpiry.getTime() < absoluteExpiry.getTime() ? renewedIdleExpiry : absoluteExpiry;
+      await this.pool.query(
+        `
+          update agent_task_leases
+          set expires_at = $2,
+              updated_at = now()
+          where id = $1
+        `,
+        [row.id, nextExpiresAt]
+      );
+    }
 
     return {
       id: row.id,

@@ -79,9 +79,12 @@ function parseSseEvents(text: string): SseEvent[] {
 describe("API orchestrator", () => {
   let pool: import("pg").Pool;
   let store: PgChatStore;
+  const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(async () => {
     process.env.LLM_API_KEY_ENCRYPTION_KEY = "a".repeat(64);
+    process.env.NODE_ENV = originalNodeEnv;
+    delete process.env.MCP_GATEWAY_ALLOW_INACTIVE_LEASES;
     const db = newDb();
     const adapter = db.adapters.createPg();
     pool = new adapter.Pool();
@@ -90,6 +93,8 @@ describe("API orchestrator", () => {
   });
 
   afterEach(async () => {
+    process.env.NODE_ENV = originalNodeEnv;
+    delete process.env.MCP_GATEWAY_ALLOW_INACTIVE_LEASES;
     await pool.end();
   });
 
@@ -1872,6 +1877,64 @@ describe("API orchestrator", () => {
       .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
       .expect(200);
 
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+
+    await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${leaseToken}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
+      .expect(401);
+  });
+
+  it("can temporarily allow inactive Agent Task Leases for MCP gateway smoke debugging outside production", async () => {
+    process.env.MCP_GATEWAY_ALLOW_INACTIVE_LEASES = "true";
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "github",
+      accountLabel: "GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const session = await store.createChatSession({ agentId: agent.id, title: "Debug inactive lease" });
+
+    await request(app)
+      .post(`/api/chat-sessions/${session.id}/messages`)
+      .send({ message: "Finish task." })
+      .expect(202);
+
+    const leaseToken = runAgentTask.mock.calls[0]![0].agentTaskLeaseToken;
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+
+    const response = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${leaseToken}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
+      .expect(200);
+
+    expect(response.body.result.tools.map((tool: { name: string }) => tool.name)).toContain("github_search_issues");
+  });
+
+  it("does not allow inactive Agent Task Leases in production even when the debug flag is set", async () => {
+    process.env.MCP_GATEWAY_ALLOW_INACTIVE_LEASES = "true";
+    process.env.NODE_ENV = "production";
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const app = createApiApp({ chatStore: store, runAgentTask });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const session = await store.createChatSession({ agentId: agent.id, title: "Production inactive lease" });
+
+    await request(app)
+      .post(`/api/chat-sessions/${session.id}/messages`)
+      .send({ message: "Finish task." })
+      .expect(202);
+
+    const leaseToken = runAgentTask.mock.calls[0]![0].agentTaskLeaseToken;
     deferred.resolve(completedRunnerResult);
     await drainPendingTaskExecutions(app);
 
