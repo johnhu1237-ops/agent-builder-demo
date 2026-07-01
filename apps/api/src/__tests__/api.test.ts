@@ -1599,11 +1599,14 @@ describe("API orchestrator", () => {
     await drainPendingTaskExecutions(timeoutApp);
   });
 
-  it("returns MCP-friendly errors and failed audit records when auto tool execution fails", async () => {
+  it("returns MCP error content and failed audit records when auto tool execution fails", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
     const externalToolExecutor = {
-      executeTool: vi.fn().mockRejectedValue(new Error("Arcade execution failed"))
+      executeTool: vi.fn().mockResolvedValue({
+        isError: true,
+        content: [{ type: "text", text: "Arcade execution failed" }]
+      })
     };
     const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
 
@@ -1649,9 +1652,9 @@ describe("API orchestrator", () => {
     expect(response.body).toEqual({
       jsonrpc: "2.0",
       id: 6,
-      error: {
-        code: -32603,
-        message: "Arcade execution failed"
+      result: {
+        isError: true,
+        content: [{ type: "text", text: "Arcade execution failed" }]
       }
     });
 
