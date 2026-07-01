@@ -33,7 +33,7 @@ describe("Arcade API Tool Executor", () => {
       id: "exec_1",
       output: {
         value: {
-          issues: [{ number: 37, title: "Execute github_search_issues" }]
+          issues: [{ number: 37, title: "Execute github_list_issues" }]
         }
       },
       success: true
@@ -43,24 +43,50 @@ describe("Arcade API Tool Executor", () => {
     const result = await executor.executeTool({
       arcadeUserId: "github-user-1",
       provider: "github",
-      mcpToolName: "github_search_issues",
-      providerToolName: "Github.SearchIssues",
+      mcpToolName: "github_list_issues",
+      providerToolName: "Github.ListIssues",
       args: { query: "repo:johnhu1237-ops/agent-builder-demo issue 37" }
     });
 
     expect(Arcade).toHaveBeenCalledWith({ apiKey: "arcade-api-key" });
     expect(toolsExecuteMock).toHaveBeenCalledWith({
       user_id: "github-user-1",
-      tool_name: "Github.SearchIssues",
-      input: { query: "repo:johnhu1237-ops/agent-builder-demo issue 37" }
+      tool_name: "Github.ListIssues",
+      input: { owner: "johnhu1237-ops", repo: "agent-builder-demo" }
     });
     expect(result).toEqual({
       content: [
         {
           type: "text",
-          text: JSON.stringify({ issues: [{ number: 37, title: "Execute github_search_issues" }] }, null, 2)
+          text: JSON.stringify({ issues: [{ number: 37, title: "Execute github_list_issues" }] }, null, 2)
         }
       ]
+    });
+  });
+
+  it("passes explicit Github.ListIssues owner and repo arguments through to Arcade", async () => {
+    toolsExecuteMock.mockResolvedValue({
+      output: {
+        value: {
+          issues: [{ number: 39, title: "List explicit repo issues" }]
+        }
+      },
+      success: true
+    });
+    const executor = new ArcadeApiToolExecutor();
+
+    await executor.executeTool({
+      arcadeUserId: "github-user-1",
+      provider: "github",
+      mcpToolName: "github_list_issues",
+      providerToolName: "Github.ListIssues",
+      args: { owner: "johnhu1237-ops", repo: "agent-builder-demo", state: "open" }
+    });
+
+    expect(toolsExecuteMock).toHaveBeenCalledWith({
+      user_id: "github-user-1",
+      tool_name: "Github.ListIssues",
+      input: { owner: "johnhu1237-ops", repo: "agent-builder-demo", state: "open" }
     });
   });
 
@@ -78,8 +104,8 @@ describe("Arcade API Tool Executor", () => {
     const result = await executor.executeTool({
       arcadeUserId: "github-user-1",
       provider: "github",
-      mcpToolName: "github_search_issues",
-      providerToolName: "Github.SearchIssues",
+      mcpToolName: "github_list_issues",
+      providerToolName: "Github.ListIssues",
       args: { query: "repo:johnhu1237-ops/agent-builder-demo issue 37" }
     });
 
@@ -96,8 +122,8 @@ describe("Arcade API Tool Executor", () => {
     const result = await executor.executeTool({
       arcadeUserId: "github-user-1",
       provider: "github",
-      mcpToolName: "github_search_issues",
-      providerToolName: "Github.SearchIssues",
+      mcpToolName: "github_list_issues",
+      providerToolName: "Github.ListIssues",
       args: { query: "repo:johnhu1237-ops/agent-builder-demo issue 37" }
     });
 

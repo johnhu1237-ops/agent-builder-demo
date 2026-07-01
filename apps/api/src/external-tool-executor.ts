@@ -19,6 +19,44 @@ function redactArcadeCredential(message: string, apiKey: string): string {
   return apiKey ? message.split(apiKey).join("[REDACTED]") : message;
 }
 
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeGithubListIssuesArgs(args: unknown): Record<string, unknown> {
+  const input = toRecord(args);
+  if (typeof input.owner === "string" && input.owner && typeof input.repo === "string" && input.repo) {
+    return input;
+  }
+
+  if (typeof input.query !== "string") {
+    return input;
+  }
+
+  const repoMatch = input.query.match(/\brepo:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
+  if (!repoMatch) {
+    return input;
+  }
+
+  const normalized: Record<string, unknown> = {
+    ...input,
+    owner: repoMatch[1],
+    repo: repoMatch[2]
+  };
+  delete normalized.query;
+  return normalized;
+}
+
+function normalizeProviderToolArgs(input: {
+  providerToolName: string;
+  args: unknown;
+}): Record<string, unknown> {
+  if (input.providerToolName === "Github.ListIssues") {
+    return normalizeGithubListIssuesArgs(input.args);
+  }
+  return toRecord(input.args);
+}
+
 export class ArcadeApiToolExecutor implements ExternalToolExecutor {
   private readonly apiKey = process.env.ARCADE_API_KEY?.trim() ?? "";
   private readonly baseUrl = process.env.ARCADE_BASE_URL?.trim() ?? "";
@@ -44,7 +82,7 @@ export class ArcadeApiToolExecutor implements ExternalToolExecutor {
       execution = await client.tools.execute({
         user_id: input.arcadeUserId,
         tool_name: input.providerToolName,
-        input: input.args && typeof input.args === "object" ? (input.args as Record<string, unknown>) : {}
+        input: normalizeProviderToolArgs(input)
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Arcade tool execution failed";

@@ -3,34 +3,36 @@ import { describe, expect, it } from "vitest";
 import { findProductToolDefinition, listProductToolDefinitionsForConnectedApp } from "../product-tool-registry";
 
 describe("Product Tool Registry", () => {
-  it("contains the GitHub issue search Tool Definition", () => {
+  it("contains the GitHub issue list Tool Definition", () => {
     expect(
       findProductToolDefinition({
         connectedAppId: "github",
-        mcpToolName: "github_search_issues"
+        mcpToolName: "github_list_issues"
       })
     ).toEqual({
       provider: "github",
       connectedAppId: "github",
-      mcpToolName: "github_search_issues",
-      providerToolName: "Github.SearchIssues",
-      displayName: "Search issues",
-      description: "Search GitHub issues through the product MCP gateway.",
+      mcpToolName: "github_list_issues",
+      providerToolName: "Github.ListIssues",
+      displayName: "List issues",
+      description: "List GitHub issues through the product MCP gateway.",
       defaultMode: "ask_each_time",
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string" }
+          owner: { type: "string" },
+          repo: { type: "string" },
+          state: { type: "string", enum: ["open", "closed", "all"] }
         },
-        required: ["query"]
+        required: ["owner", "repo"]
       },
-      previewFields: ["query"]
+      previewFields: ["owner", "repo", "state"]
     });
   });
 
   it("lists Tool Definitions by connected app without assuming a single provider", () => {
     expect(listProductToolDefinitionsForConnectedApp("github").map((definition) => definition.mcpToolName)).toEqual([
-      "github_search_issues",
+      "github_list_issues",
       "github_create_issue"
     ]);
     expect(listProductToolDefinitionsForConnectedApp("mock-slack").map((definition) => definition.mcpToolName)).toEqual([

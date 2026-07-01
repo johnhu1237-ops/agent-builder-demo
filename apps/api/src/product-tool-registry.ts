@@ -12,23 +12,40 @@ export type ProductToolDefinition = {
   previewFields: string[];
 };
 
+export type ProviderToolDefinition = {
+  input?: {
+    parameters?: Array<{
+      name: string;
+      description?: string;
+      required?: boolean;
+      value_schema?: {
+        val_type?: string;
+        enum?: string[];
+        inner_val_type?: string;
+      };
+    }>;
+  };
+};
+
 const productToolDefinitions = [
   {
     provider: "github",
     connectedAppId: "github",
-    mcpToolName: "github_search_issues",
-    providerToolName: "Github.SearchIssues",
-    displayName: "Search issues",
-    description: "Search GitHub issues through the product MCP gateway.",
+    mcpToolName: "github_list_issues",
+    providerToolName: "Github.ListIssues",
+    displayName: "List issues",
+    description: "List GitHub issues through the product MCP gateway.",
     defaultMode: "ask_each_time",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string" }
+        owner: { type: "string" },
+        repo: { type: "string" },
+        state: { type: "string", enum: ["open", "closed", "all"] }
       },
-      required: ["query"]
+      required: ["owner", "repo"]
     },
-    previewFields: ["query"]
+    previewFields: ["owner", "repo", "state"]
   }
 ] as const satisfies ProductToolDefinition[];
 
@@ -112,5 +129,68 @@ export function toMcpTool(definition: ProductToolDefinition) {
     name: definition.mcpToolName,
     description: definition.description,
     inputSchema: definition.inputSchema
+  };
+}
+
+function valueSchemaToJsonSchema(valueSchema: NonNullable<ProviderToolDefinition["input"]>["parameters"][number]["value_schema"]) {
+  const valType = valueSchema?.val_type?.toLowerCase();
+  const jsonSchema: Record<string, unknown> = {};
+
+  if (valueSchema?.enum?.length) {
+    jsonSchema.enum = valueSchema.enum;
+  }
+
+  if (valType === "integer" || valType === "int") {
+    return { type: "integer", ...jsonSchema };
+  }
+  if (valType === "number" || valType === "float") {
+    return { type: "number", ...jsonSchema };
+  }
+  if (valType === "boolean" || valType === "bool") {
+    return { type: "boolean", ...jsonSchema };
+  }
+  if (valType === "array" || valType === "list") {
+    const innerType = valueSchema?.inner_val_type?.toLowerCase();
+    return {
+      type: "array",
+      items: { type: innerType === "integer" || innerType === "int" ? "integer" : innerType || "string" },
+      ...jsonSchema
+    };
+  }
+  if (valType === "object" || valType === "dict") {
+    return { type: "object", ...jsonSchema };
+  }
+  return { type: "string", ...jsonSchema };
+}
+
+export function toMcpToolWithProviderDefinition(
+  definition: ProductToolDefinition,
+  providerDefinition: ProviderToolDefinition | null
+) {
+  const parameters = providerDefinition?.input?.parameters;
+  if (!parameters?.length) {
+    return toMcpTool(definition);
+  }
+
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (const parameter of parameters) {
+    properties[parameter.name] = {
+      ...valueSchemaToJsonSchema(parameter.value_schema),
+      ...(parameter.description ? { description: parameter.description } : {})
+    };
+    if (parameter.required) {
+      required.push(parameter.name);
+    }
+  }
+
+  return {
+    name: definition.mcpToolName,
+    description: definition.description,
+    inputSchema: {
+      type: "object",
+      properties,
+      ...(required.length ? { required } : {})
+    }
   };
 }

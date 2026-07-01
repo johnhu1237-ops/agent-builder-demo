@@ -156,7 +156,7 @@ describe("API orchestrator", () => {
       }),
       expect.objectContaining({
         appId: "github",
-        toolName: "github_search_issues",
+        toolName: "github_list_issues",
         mode: "ask_each_time"
       })
     ]);
@@ -442,7 +442,7 @@ describe("API orchestrator", () => {
             mode: "ask_each_time"
           }),
           expect.objectContaining({
-            toolName: "github_search_issues",
+            toolName: "github_list_issues",
             mode: "ask_each_time"
           })
         ])
@@ -469,7 +469,7 @@ describe("API orchestrator", () => {
             mode: "auto"
           }),
           expect.objectContaining({
-            toolName: "github_search_issues",
+            toolName: "github_list_issues",
             mode: "ask_each_time"
           })
         ])
@@ -862,7 +862,37 @@ describe("API orchestrator", () => {
   it("serves MCP tools/list from persisted Tool Configuration through the Agent Task Lease bearer token", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
-    const app = createApiApp({ chatStore: store, runAgentTask });
+    const providerToolDefinitionClient = {
+      getToolDefinition: vi.fn(async (input: { providerToolName: string }) => {
+        if (input.providerToolName !== "Github.ListIssues") {
+          return null;
+        }
+        return {
+          input: {
+            parameters: [
+              {
+                name: "owner",
+                description: "Repository owner.",
+                required: true,
+                value_schema: { val_type: "string" }
+              },
+              {
+                name: "repo",
+                description: "Repository name.",
+                required: true,
+                value_schema: { val_type: "string" }
+              },
+              {
+                name: "state",
+                required: false,
+                value_schema: { val_type: "string", enum: ["open", "closed", "all"] }
+              }
+            ]
+          }
+        };
+      })
+    };
+    const app = createApiApp({ chatStore: store, runAgentTask, providerToolDefinitionClient });
 
     const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
     const connectedAccount = await store.createConnectedAccount({
@@ -912,18 +942,24 @@ describe("API orchestrator", () => {
             }
           },
           {
-            name: "github_search_issues",
-            description: "Search GitHub issues through the product MCP gateway.",
+            name: "github_list_issues",
+            description: "List GitHub issues through the product MCP gateway.",
             inputSchema: {
               type: "object",
               properties: {
-                query: { type: "string" }
+                owner: { type: "string", description: "Repository owner." },
+                repo: { type: "string", description: "Repository name." },
+                state: { type: "string", enum: ["open", "closed", "all"] }
               },
-              required: ["query"]
+              required: ["owner", "repo"]
             }
           }
         ]
       }
+    });
+    expect(providerToolDefinitionClient.getToolDefinition).toHaveBeenCalledWith({
+      arcadeUserId: "github-user-1",
+      providerToolName: "Github.ListIssues"
     });
 
     const [toolConfiguration] = await store.listToolConfigurationsForAgent(agent.id);
@@ -942,14 +978,16 @@ describe("API orchestrator", () => {
 
     expect(disabledResponse.body.result.tools).toEqual([
       {
-        name: "github_search_issues",
-        description: "Search GitHub issues through the product MCP gateway.",
+        name: "github_list_issues",
+        description: "List GitHub issues through the product MCP gateway.",
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string" }
+            owner: { type: "string", description: "Repository owner." },
+            repo: { type: "string", description: "Repository name." },
+            state: { type: "string", enum: ["open", "closed", "all"] }
           },
-          required: ["query"]
+          required: ["owner", "repo"]
         }
       }
     ]);
@@ -961,7 +999,7 @@ describe("API orchestrator", () => {
   it("verifies a Codex Agent Task can use the product MCP gateway end to end", async () => {
     const externalToolExecutor = {
       executeTool: vi.fn().mockResolvedValue({
-        content: [{ type: "text", text: "Search found issue #42" }]
+        content: [{ type: "text", text: "List found issue #42" }]
       })
     };
     let app: import("express").Express;
@@ -974,7 +1012,7 @@ describe("API orchestrator", () => {
 
       expect(toolsResponse.body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
         "github_create_issue",
-        "github_search_issues"
+        "github_list_issues"
       ]);
 
       await request(app)
@@ -985,7 +1023,7 @@ describe("API orchestrator", () => {
           id: 22,
           method: "tools/call",
           params: {
-            name: "github_search_issues",
+            name: "github_list_issues",
             arguments: { query: "repo:acme/widgets gateway" }
           }
         })
@@ -1050,7 +1088,7 @@ describe("API orchestrator", () => {
         workDir: "sandbox-gateway",
         taskMessages: [
           { type: "status", tool: "mcp", content: "Listed product MCP gateway tools", inputJson: null, output: null },
-          { type: "tool_use", tool: "github_search_issues", content: "Called auto GitHub search", inputJson: null, output: null },
+          { type: "tool_use", tool: "github_list_issues", content: "Called auto GitHub list", inputJson: null, output: null },
           { type: "status", tool: "mcp", content: "Observed denied and expired Tool Confirmations", inputJson: null, output: null }
         ]
       } satisfies RunnerAgentTaskResponse;
@@ -1071,7 +1109,7 @@ describe("API orchestrator", () => {
       agentIds: [agent.id]
     });
     const toolConfigurations = await store.listToolConfigurationsForAgent(agent.id);
-    const searchToolConfiguration = toolConfigurations.find((tool) => tool.toolName === "github_search_issues");
+    const searchToolConfiguration = toolConfigurations.find((tool) => tool.toolName === "github_list_issues");
     expect(searchToolConfiguration).toBeDefined();
     await store.updateToolConfigurationMode({
       agentId: agent.id,
@@ -1093,8 +1131,8 @@ describe("API orchestrator", () => {
     expect(externalToolExecutor.executeTool).toHaveBeenCalledTimes(1);
     expect(externalToolExecutor.executeTool).toHaveBeenCalledWith(
       expect.objectContaining({
-        mcpToolName: "github_search_issues",
-        providerToolName: "Github.SearchIssues",
+        mcpToolName: "github_list_issues",
+        providerToolName: "Github.ListIssues",
         args: { query: "repo:acme/widgets gateway" }
       })
     );
@@ -1109,8 +1147,8 @@ describe("API orchestrator", () => {
     );
     expect(auditRows.rows).toEqual([
       {
-        mcp_tool_name: "github_search_issues",
-        provider_tool_name: "Github.SearchIssues",
+        mcp_tool_name: "github_list_issues",
+        provider_tool_name: "Github.ListIssues",
         status: "executed",
         mode: "auto"
       },
@@ -1146,17 +1184,17 @@ describe("API orchestrator", () => {
     expect(detailResponse.body.latestTask.status).toBe("completed");
     expect(detailResponse.body.taskMessages).toEqual([
       expect.objectContaining({ type: "status", tool: "mcp", content: "Listed product MCP gateway tools" }),
-      expect.objectContaining({ type: "tool_use", tool: "github_search_issues", content: "Called auto GitHub search" }),
+      expect.objectContaining({ type: "tool_use", tool: "github_list_issues", content: "Called auto GitHub list" }),
       expect.objectContaining({ type: "status", tool: "mcp", content: "Observed denied and expired Tool Confirmations" })
     ]);
   });
 
-  it("uses the live github_search_issues Tool Configuration mode for each MCP tools/call", async () => {
+  it("uses the live github_list_issues Tool Configuration mode for each MCP tools/call", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
     const externalToolExecutor = {
       executeTool: vi.fn().mockResolvedValue({
-        content: [{ type: "text", text: "Search found issue #38" }]
+        content: [{ type: "text", text: "List found issue #38" }]
       })
     };
     const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
@@ -1170,10 +1208,10 @@ describe("API orchestrator", () => {
       agentIds: [agent.id]
     });
     const toolConfigurations = await store.listToolConfigurationsForAgent(agent.id);
-    const searchToolConfiguration = toolConfigurations.find((tool) => tool.toolName === "github_search_issues");
+    const searchToolConfiguration = toolConfigurations.find((tool) => tool.toolName === "github_list_issues");
     expect(searchToolConfiguration).toEqual(
       expect.objectContaining({
-        toolName: "github_search_issues",
+        toolName: "github_list_issues",
         mode: "ask_each_time"
       })
     );
@@ -1185,7 +1223,7 @@ describe("API orchestrator", () => {
 
     await request(app)
       .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
-      .send({ message: "Search GitHub issues." })
+      .send({ message: "List GitHub issues." })
       .expect(202);
 
     const call = runAgentTask.mock.calls[0]![0];
@@ -1197,7 +1235,7 @@ describe("API orchestrator", () => {
         id: 38,
         method: "tools/call",
         params: {
-          name: "github_search_issues",
+          name: "github_list_issues",
           arguments: { query: "repo:johnhu1237-ops/agent-builder-demo issue 38" }
         }
       })
@@ -1230,7 +1268,7 @@ describe("API orchestrator", () => {
         id: 39,
         method: "tools/call",
         params: {
-          name: "github_search_issues",
+          name: "github_list_issues",
           arguments: { query: "repo:johnhu1237-ops/agent-builder-demo issue 38" }
         }
       })
@@ -1240,15 +1278,15 @@ describe("API orchestrator", () => {
       jsonrpc: "2.0",
       id: 39,
       result: {
-        content: [{ type: "text", text: "Search found issue #38" }]
+        content: [{ type: "text", text: "List found issue #38" }]
       }
     });
     expect(externalToolExecutor.executeTool).toHaveBeenCalledTimes(1);
     expect(externalToolExecutor.executeTool).toHaveBeenCalledWith({
       arcadeUserId: "github-user-1",
       provider: "github",
-      mcpToolName: "github_search_issues",
-      providerToolName: "Github.SearchIssues",
+      mcpToolName: "github_list_issues",
+      providerToolName: "Github.ListIssues",
       args: { query: "repo:johnhu1237-ops/agent-builder-demo issue 38" }
     });
 
@@ -1262,20 +1300,20 @@ describe("API orchestrator", () => {
     );
     expect(auditRows.rows).toEqual([
       {
-        mcp_tool_name: "github_search_issues",
-        provider_tool_name: "Github.SearchIssues",
+        mcp_tool_name: "github_list_issues",
+        provider_tool_name: "Github.ListIssues",
         status: "confirmation_required",
         mode: "ask_each_time"
       },
       {
-        mcp_tool_name: "github_search_issues",
-        provider_tool_name: "Github.SearchIssues",
+        mcp_tool_name: "github_list_issues",
+        provider_tool_name: "Github.ListIssues",
         status: "denied",
         mode: "ask_each_time"
       },
       {
-        mcp_tool_name: "github_search_issues",
-        provider_tool_name: "Github.SearchIssues",
+        mcp_tool_name: "github_list_issues",
+        provider_tool_name: "Github.ListIssues",
         status: "executed",
         mode: "auto"
       }
@@ -1917,7 +1955,7 @@ describe("API orchestrator", () => {
       .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
       .expect(200);
 
-    expect(response.body.result.tools.map((tool: { name: string }) => tool.name)).toContain("github_search_issues");
+    expect(response.body.result.tools.map((tool: { name: string }) => tool.name)).toContain("github_list_issues");
   });
 
   it("does not allow inactive Agent Task Leases in production even when the debug flag is set", async () => {

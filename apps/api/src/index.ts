@@ -19,7 +19,7 @@ import {
 } from "@agent-builder/shared";
 import { agentTaskMcpGatewayEndpoint, getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
 import { runChatMigrations } from "./chat-migrations";
-import { PgChatStore, type ToolConfiguration } from "./chat-store";
+import { PgChatStore, type ToolConfigurationWithAccount } from "./chat-store";
 import { redactSecrets } from "./redaction";
 import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
 import { decryptApiKey, validateEncryptionKey } from "./encryption";
@@ -30,16 +30,21 @@ import {
   type ArcadeToolConfigurationSyncer
 } from "./arcade-tool-configuration-syncer";
 import {
+  ArcadeProviderToolDefinitionClient,
+  type ProviderToolDefinitionClient
+} from "./provider-tool-definition-client";
+import {
   ArcadeConnectedAppAuthorizationClient,
   githubConnectedAppProvider,
   type ConnectedAppAuthorizationClient
 } from "./connected-app-authorization";
-import { findProductToolDefinition, toMcpTool } from "./product-tool-registry";
+import { findProductToolDefinition, toMcpTool, toMcpToolWithProviderDefinition } from "./product-tool-registry";
 
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
   externalToolExecutor?: ExternalToolExecutor;
   arcadeToolConfigurationSyncer?: ArcadeToolConfigurationSyncer;
+  providerToolDefinitionClient?: ProviderToolDefinitionClient;
   connectedAppAuthorizationClient?: ConnectedAppAuthorizationClient;
   toolConfirmationTimeoutMs?: number;
 };
@@ -107,17 +112,28 @@ function mcpToolCallParams(body: unknown): { name: string; args: unknown } | nul
   };
 }
 
-function toolsForToolConfigurations(toolConfigurations: ToolConfiguration[]) {
-  return toolConfigurations
+async function toolsForToolConfigurations(
+  toolConfigurations: ToolConfigurationWithAccount[],
+  providerToolDefinitionClient: ProviderToolDefinitionClient
+) {
+  return Promise.all(
+    toolConfigurations
     .filter((toolConfiguration) => toolConfiguration.mode !== "disabled")
-    .map((toolConfiguration) =>
-      findProductToolDefinition({
+    .map(async (toolConfiguration) => {
+      const toolDefinition = findProductToolDefinition({
         connectedAppId: toolConfiguration.appId,
         mcpToolName: toolConfiguration.toolName
-      })
-    )
-    .filter((toolDefinition): toolDefinition is NonNullable<typeof toolDefinition> => Boolean(toolDefinition))
-    .map(toMcpTool);
+      });
+      if (!toolDefinition) {
+        return null;
+      }
+      const providerDefinition = await providerToolDefinitionClient.getToolDefinition({
+        arcadeUserId: toolConfiguration.externalAccountId,
+        providerToolName: toolDefinition.providerToolName
+      }).catch(() => null);
+      return toMcpToolWithProviderDefinition(toolDefinition, providerDefinition);
+    })
+  ).then((tools) => tools.filter((tool): tool is NonNullable<typeof tool> => Boolean(tool)));
 }
 
 function allowInactiveMcpLeasesForDebug(): boolean {
@@ -262,6 +278,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
   const externalToolExecutor = deps.externalToolExecutor ?? new ArcadeApiToolExecutor();
   const arcadeToolConfigurationSyncer =
     deps.arcadeToolConfigurationSyncer ?? new NoopArcadeToolConfigurationSyncer();
+  const providerToolDefinitionClient =
+    deps.providerToolDefinitionClient ?? new ArcadeProviderToolDefinitionClient();
   const connectedAppAuthorizationClient =
     deps.connectedAppAuthorizationClient ?? new ArcadeConnectedAppAuthorizationClient();
   const toolConfirmationTimeoutMs = deps.toolConfirmationTimeoutMs ?? 3 * 60 * 1000;
@@ -837,8 +855,8 @@ export function createApiApp(deps: ApiDependencies = {}) {
     }
 
     if (method === "tools/list") {
-      const toolConfigurations = await chatStore.listToolConfigurationsForAgent(lease.agentId);
-      res.json(jsonRpcResult(id, { tools: toolsForToolConfigurations(toolConfigurations) }));
+      const toolConfigurations = await chatStore.listToolConfigurationsWithAccountForAgent(lease.agentId);
+      res.json(jsonRpcResult(id, { tools: await toolsForToolConfigurations(toolConfigurations, providerToolDefinitionClient) }));
       return;
     }
 

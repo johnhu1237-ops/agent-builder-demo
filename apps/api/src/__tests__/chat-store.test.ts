@@ -31,7 +31,7 @@ describe("PgChatStore", () => {
     await expect(runChatMigrations(pool)).resolves.toBeUndefined();
   });
 
-  it("migrates existing GitHub Connected Account and Tool Configuration rows to the github app id", async () => {
+  it("migrates existing GitHub Connected Account and Tool Configuration rows to the github app id and list issues tool", async () => {
     const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
     await pool.query(
       `
@@ -80,12 +80,12 @@ describe("PgChatStore", () => {
     const connectedAccounts = await pool.query<{ app_id: string }>(
       `select app_id from connected_accounts where id = 'legacy-github-account'`
     );
-    const toolConfigurations = await pool.query<{ app_id: string }>(
-      `select app_id from tool_configurations where id = 'legacy-github-search-config'`
+    const toolConfigurations = await pool.query<{ app_id: string; tool_name: string }>(
+      `select app_id, tool_name from tool_configurations where id = 'legacy-github-search-config'`
     );
 
     expect(connectedAccounts.rows).toEqual([{ app_id: "github" }]);
-    expect(toolConfigurations.rows).toEqual([{ app_id: "github" }]);
+    expect(toolConfigurations.rows).toEqual([{ app_id: "github", tool_name: "github_list_issues" }]);
   });
 
   describe("v0.1.3 multi-agent migration", () => {
@@ -1449,7 +1449,7 @@ describe("PgChatStore", () => {
           agentId: agent.id,
           connectedAccountId: connectedAccount.id,
           appId: "github",
-          toolName: "github_search_issues",
+          toolName: "github_list_issues",
           mode: "ask_each_time"
         })
       ]);

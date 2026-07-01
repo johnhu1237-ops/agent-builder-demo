@@ -815,6 +815,28 @@ export class PgChatStore {
     return result.rows.map(mapToolConfiguration);
   }
 
+  async listToolConfigurationsWithAccountForAgent(agentId: string): Promise<ToolConfigurationWithAccount[]> {
+    const result = await this.pool.query<ToolConfigurationWithAccountRow>(
+      `
+        select
+          tc.*,
+          ca.external_account_id,
+          ca.status as connected_account_status
+        from tool_configurations tc
+        join connected_accounts ca on ca.id = tc.connected_account_id
+        join connected_account_agents caa
+          on caa.connected_account_id = ca.id
+         and caa.agent_id = tc.agent_id
+        where tc.agent_id = $1
+          and ca.status = 'connected'
+        order by ca.app_id asc, tc.tool_name asc
+      `,
+      [agentId]
+    );
+
+    return result.rows.map(mapToolConfigurationWithAccount);
+  }
+
   async listConnectedAppsForAgent(agentId: string): Promise<ConnectedAppState[]> {
     const result = await this.pool.query<ConnectedAccountRow>(
       `
