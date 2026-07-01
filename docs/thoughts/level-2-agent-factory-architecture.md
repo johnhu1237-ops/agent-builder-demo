@@ -12,7 +12,7 @@ The current Level-1 agent runtime is **Codex**. Codex runs inside an **E2B sandb
 
 Architecture overview:
 
-![Level-2 Agent Factory Architecture](./architecture-diagram.png)
+![Level-2 Agent Factory Architecture](https://github.com/johnhu1237-ops/agent-builder-demo/blob/main/docs/thoughts/architecture-diagram.png)
 
 The important point is:
 
