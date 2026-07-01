@@ -54,7 +54,7 @@ const legacyToolDefinitions = [
     provider: "github",
     connectedAppId: "github",
     mcpToolName: "github_create_issue",
-    providerToolName: "github_create_issue",
+    providerToolName: "GitHub.CreateIssue",
     displayName: "Create issue",
     description: "Create a GitHub issue through the product MCP gateway.",
     defaultMode: "ask_each_time",
