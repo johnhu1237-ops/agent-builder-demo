@@ -869,6 +869,16 @@ async function runChatMigrationsSequence(db: Queryable): Promise<void> {
   `
   );
 
+  await addColumnIfNeeded(
+    db,
+    "agents",
+    "deleted_at",
+    `
+    alter table agents
+    add column if not exists deleted_at timestamptz
+  `
+  );
+
   await backfillCreatedOrder(db, "chat_message");
   await backfillCreatedOrder(db, "agent_tasks");
 

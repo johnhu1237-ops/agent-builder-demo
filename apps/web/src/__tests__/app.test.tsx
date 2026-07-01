@@ -247,6 +247,9 @@ beforeEach(() => {
     if (/\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
       return jsonResponse(agentFixture());
     }
+    if (/\/api\/agents\/[^/]+$/.test(url) && method === "DELETE") {
+      return jsonResponse({ ok: true });
+    }
 
     if (url.endsWith("/api/chat-sessions") && method === "POST") {
       return jsonResponse(sessionFixture(), 201);
@@ -426,6 +429,32 @@ describe("multi-agent UI", () => {
     await user.click(await screen.findByRole("tab", { name: "Tools" }));
 
     expect(await screen.findByRole("button", { name: "Connect GitHub" })).toBeInTheDocument();
+  });
+
+  it("deletes an agent after confirmation", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Research Agent/ }));
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as Array<[string, RequestInit?]>;
+      expect(
+        calls.some(
+          ([url, options]) =>
+            typeof url === "string" &&
+            url.endsWith("/api/agents/agent_1") &&
+            options?.method === "DELETE"
+        )
+      ).toBe(true);
+    });
+    expect(confirmSpy).toHaveBeenCalledWith('Delete "Research Agent"? Existing chats will be preserved.');
+    expect(screen.queryByRole("button", { name: /Research Agent/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Select an agent to get started, or create a new one from the sidebar.")).toBeInTheDocument();
   });
 
   it("starts GitHub authorization without directly completing the Connected App", async () => {

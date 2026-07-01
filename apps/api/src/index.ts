@@ -19,7 +19,7 @@ import {
 } from "@agent-builder/shared";
 import { agentTaskMcpGatewayEndpoint, getRunnerEventToken, requireRunnerEventAuth, runnerEventEndpoint } from "./runner-event-auth";
 import { runChatMigrations } from "./chat-migrations";
-import { PgChatStore, type ToolConfigurationWithAccount } from "./chat-store";
+import { PgChatStore, type ToolConfiguration, type ToolConfigurationWithAccount } from "./chat-store";
 import { redactSecrets } from "./redaction";
 import { createHttpRunnerClient, type RunnerClient } from "./runner-client";
 import { decryptApiKey, validateEncryptionKey } from "./encryption";
@@ -443,6 +443,16 @@ export function createApiApp(deps: ApiDependencies = {}) {
       res.json(publicAgent(agent));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Update failed";
+      res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
+    }
+  });
+
+  app.delete("/api/agents/:id", async (req, res) => {
+    try {
+      await chatStore.deleteAgent(req.params.id);
+      res.status(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Delete failed";
       res.status(message.includes("not found") ? 404 : 500).json(stableError(message));
     }
   });

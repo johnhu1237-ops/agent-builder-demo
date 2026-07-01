@@ -53,6 +53,17 @@ export async function updateAgent(id: string, input: { spec: unknown; apiKey?: s
   });
 }
 
+export async function deleteAgent(id: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/agents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" }
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error ?? `Request failed with status ${response.status}`);
+  }
+}
+
 export async function listToolConfigurations(agentId: string): Promise<ToolConfiguration[]> {
   return requestJson<ToolConfiguration[]>(`/api/agents/${encodeURIComponent(agentId)}/tool-configurations`);
 }

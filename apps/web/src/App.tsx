@@ -26,6 +26,7 @@ import {
   createAgent,
   getAgent,
   updateAgent,
+  deleteAgent,
   startGithubConnectedAppAuthorization,
   completeGithubConnectedApp,
   listConnectedApps,
@@ -435,6 +436,27 @@ export default function App() {
     }
   }
 
+  async function handleDeleteAgent() {
+    if (!activeAgent) return;
+    const confirmed = window.confirm(`Delete "${activeAgent.name}"? Existing chats will be preserved.`);
+    if (!confirmed) return;
+
+    try {
+      await deleteAgent(activeAgent.id);
+      setAgents((prev) => prev.filter((agent) => agent.id !== activeAgent.id));
+      setActiveAgent(null);
+      setEditingSpec(defaultAgentSpec);
+      setConnectedApps([]);
+      setToolConfigurations([]);
+      setEditAgentApiKey("");
+      setActiveSession(null);
+      setWorkspaceView("empty");
+      setError(null);
+    } catch {
+      setError("Failed to delete agent");
+    }
+  }
+
   async function handleToolConfigurationModeChange(
     toolConfigurationId: string,
     mode: ToolConfigurationMode
@@ -809,6 +831,13 @@ export default function App() {
                       : saveState === "failed"
                         ? "Failed"
                         : "Save"}
+                </button>
+                <button
+                  className="delete-btn"
+                  type="button"
+                  onClick={handleDeleteAgent}
+                >
+                  Delete
                 </button>
               </div>
 

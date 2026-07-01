@@ -85,6 +85,7 @@ type AgentRow = {
   description: string;
   spec: AgentSpec;
   encrypted_api_key: string | null;
+  deleted_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -659,6 +660,7 @@ export class PgChatStore {
         select *
         from agents
         where id = $1
+          and deleted_at is null
       `,
       [id]
     );
@@ -672,6 +674,7 @@ export class PgChatStore {
       `
         select *
         from agents
+        where deleted_at is null
         order by created_at asc, id asc
       `
     );
@@ -698,6 +701,7 @@ export class PgChatStore {
         update agents
         set ${setClauses.join(", ")}
         where id = $1
+          and deleted_at is null
         returning *
       `,
       params
@@ -708,6 +712,25 @@ export class PgChatStore {
     }
 
     return mapAgent(result.rows[0]);
+  }
+
+  async deleteAgent(id: string): Promise<void> {
+    const result = await this.pool.query<AgentRow>(
+      `
+        update agents
+        set deleted_at = now(),
+            encrypted_api_key = null,
+            updated_at = now()
+        where id = $1
+          and deleted_at is null
+        returning *
+      `,
+      [id]
+    );
+
+    if (!result.rows[0]) {
+      throw new Error(`Agent not found: ${id}`);
+    }
   }
 
   async createConnectedAccount(input: CreateConnectedAccountInput): Promise<ConnectedAccount> {
@@ -1127,7 +1150,7 @@ export class PgChatStore {
   ): Promise<ChatSession> {
     if ("agentId" in input) {
       const agentResult = await this.pool.query<AgentRow>(
-        `select id, name from agents where id = $1`,
+        `select id, name from agents where id = $1 and deleted_at is null`,
         [input.agentId]
       );
 

@@ -5,6 +5,7 @@ const {
   listAgents,
   getAgent,
   updateAgent,
+  deleteAgent,
   createChatSession,
   sendChatMessage,
   startGithubConnectedAppAuthorization,
@@ -117,6 +118,9 @@ describe("api client", () => {
             updatedAt: new Date().toISOString()
           });
         }
+        if (options?.method === "DELETE") {
+          return jsonResponse({ ok: true });
+        }
         if (url.includes("/api/agents/agent_1")) {
           return jsonResponse({
             id: "agent_1",
@@ -188,6 +192,15 @@ describe("api client", () => {
         }
       });
       expect(agent.name).toBe("Updated");
+    });
+
+    it("deletes an agent", async () => {
+      await deleteAgent("agent_1");
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:4001/api/agents/agent_1",
+        expect.objectContaining({ method: "DELETE" })
+      );
     });
 
     it("reads and updates Tool Configuration modes", async () => {

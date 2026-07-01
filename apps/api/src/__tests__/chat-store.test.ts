@@ -1384,6 +1384,36 @@ describe("PgChatStore", () => {
       const fetched = await store.getAgent(created.id);
       expect(fetched?.hasApiKey).toBe(false);
     });
+
+    it("deletes an agent from future use while preserving its chat sessions", async () => {
+      const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+      const session = await store.createChatSession({ agentId: agent.id, title: "Historical chat" });
+
+      await store.deleteAgent(agent.id);
+
+      await expect(store.createChatSession({ agentId: agent.id })).rejects.toThrow("not found");
+      expect(await store.getAgent(agent.id)).toBeNull();
+      expect((await store.listAgents()).some((item) => item.id === agent.id)).toBe(false);
+
+      const sessions = await store.listChatSessions();
+      expect(sessions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: session.id,
+            agentId: agent.id,
+            agentName: agent.name,
+            title: "Historical chat"
+          })
+        ])
+      );
+
+      const stored = await pool.query<{ encrypted_api_key: string | null; deleted_at: Date | null }>(
+        `select encrypted_api_key, deleted_at from agents where id = $1`,
+        [agent.id]
+      );
+      expect(stored.rows[0].encrypted_api_key).toBeNull();
+      expect(stored.rows[0].deleted_at).toBeTruthy();
+    });
   });
 
   describe("agent-bound session creation", () => {

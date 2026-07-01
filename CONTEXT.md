@@ -6,7 +6,7 @@ start chat sessions, and observe agent work as part of the conversation.
 ## Language
 
 **Agent**:
-A configurable code-working persona that a user edits and tests through **Chat Sessions**. Future **Agent Tasks** use the Agent's current configuration, while past tasks keep their own task-time record.
+A configurable code-working persona that a user edits and tests through **Chat Sessions**. Future **Agent Tasks** use the Agent's current configuration, while past tasks keep their own task-time record; deleting an Agent removes it from future use while preserving existing Chat Sessions.
 _Avoid_: Bot, assistant template.
 
 **Chat Session**:

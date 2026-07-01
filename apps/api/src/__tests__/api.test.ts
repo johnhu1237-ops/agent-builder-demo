@@ -129,6 +129,32 @@ describe("API orchestrator", () => {
     expect(listResponse.body[0].title).toBe("Acme research");
   });
 
+  it("deletes an Agent from future use while preserving historical Chat Sessions", async () => {
+    const app = createApiApp({ chatStore: store });
+    const agent = await store.createAgent({ spec: defaultAgentSpec, apiKey: "sk-test" });
+    const session = await store.createChatSession({ agentId: agent.id, title: "Historical chat" });
+
+    await request(app).delete(`/api/agents/${agent.id}`).expect(204);
+
+    await request(app).get(`/api/agents/${agent.id}`).expect(404);
+    await request(app).post("/api/chat-sessions").send({ agentId: agent.id }).expect(404);
+
+    const agentsResponse = await request(app).get("/api/agents").expect(200);
+    expect(agentsResponse.body.some((item: Agent) => item.id === agent.id)).toBe(false);
+
+    const sessionsResponse = await request(app).get("/api/chat-sessions").expect(200);
+    expect(sessionsResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: session.id,
+          agentId: agent.id,
+          agentName: agent.name,
+          title: "Historical chat"
+        })
+      ])
+    );
+  });
+
   it("reads and updates Tool Configuration for an Agent", async () => {
     const syncDeferred = createDeferred<{ syncVersion: string }>();
     const arcadeToolConfigurationSyncer = {
