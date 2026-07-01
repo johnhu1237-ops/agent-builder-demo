@@ -117,7 +117,7 @@ beforeEach(() => {
     const method = options?.method ?? "GET";
 
     if (url.endsWith("/api/agents") && method === "POST") {
-      return jsonResponse(agentFixture(), 201);
+      return jsonResponse(agentFixture({ id: "agent_2" }), 201);
     }
     if (url.endsWith("/api/agents") && method === "GET") {
       return jsonResponse([agentFixture()]);
@@ -132,7 +132,7 @@ beforeEach(() => {
         agentId: "agent_1",
         connectedAccountId: "connected_account_1",
         appId: "github",
-        toolName: "github_search_issues",
+        toolName: "github_list_issues",
         mode: body.mode ?? "disabled",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -174,7 +174,7 @@ beforeEach(() => {
               agentId: "agent_1",
               connectedAccountId: "connected_account_1",
               appId: "github",
-              toolName: "github_search_issues",
+              toolName: "github_list_issues",
               mode: "ask_each_time",
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
@@ -209,7 +209,7 @@ beforeEach(() => {
                 agentId: "agent_1",
                 connectedAccountId: "connected_account_1",
                 appId: "github",
-                toolName: "github_search_issues",
+                toolName: "github_list_issues",
                 mode: "ask_each_time",
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
@@ -237,7 +237,7 @@ beforeEach(() => {
           agentId: "agent_1",
           connectedAccountId: "connected_account_1",
           appId: "github",
-          toolName: "github_search_issues",
+          toolName: "github_list_issues",
           mode: "ask_each_time",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -399,7 +399,7 @@ describe("multi-agent UI", () => {
     await user.click(agentButton);
     await user.click(await screen.findByRole("tab", { name: "Tools" }));
 
-    const modeSelect = await screen.findByLabelText("GitHub github_search_issues mode");
+    const modeSelect = await screen.findByLabelText("GitHub github_list_issues mode");
     expect(modeSelect).toHaveValue("ask_each_time");
 
     await user.selectOptions(modeSelect, "auto");
@@ -416,6 +416,16 @@ describe("multi-agent UI", () => {
       expect(JSON.parse(patchCall![1]!.body as string)).toEqual({ mode: "auto" });
     });
     expect(modeSelect).toHaveValue("auto");
+  });
+
+  it("shows available Connected Apps after creating a new agent", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /\+ Add agent/ }));
+    await user.click(await screen.findByRole("tab", { name: "Tools" }));
+
+    expect(await screen.findByRole("button", { name: "Connect GitHub" })).toBeInTheDocument();
   });
 
   it("starts GitHub authorization without directly completing the Connected App", async () => {
@@ -471,7 +481,7 @@ describe("multi-agent UI", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/GitHub via Arcade · connected/)).toBeInTheDocument();
-      expect(screen.getByLabelText("GitHub github_search_issues mode")).toBeInTheDocument();
+      expect(screen.getByLabelText("GitHub github_list_issues mode")).toBeInTheDocument();
       expect(window.location.pathname).toBe("/");
     });
   });
@@ -527,7 +537,7 @@ describe("multi-agent UI", () => {
     );
     expect(connectedAppsCallIndex).toBeGreaterThanOrEqual(0);
 
-    const modeSelect = await screen.findByLabelText("GitHub github_search_issues mode");
+    const modeSelect = await screen.findByLabelText("GitHub github_list_issues mode");
     await user.selectOptions(modeSelect, "auto");
 
     await waitFor(() => {

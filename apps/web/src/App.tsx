@@ -398,11 +398,15 @@ export default function App() {
   async function handleCreateAgent() {
     try {
       const agent = await createAgent({ spec: defaultAgentSpec, apiKey: "sk-replace-me" });
+      const [nextConnectedApps, nextToolConfigurations] = await Promise.all([
+        listConnectedApps(agent.id).catch(() => []),
+        listToolConfigurations(agent.id).catch(() => [])
+      ]);
       setAgents((prev) => [...prev, agent]);
       setActiveAgent(agent);
       setEditingSpec(agent.spec);
-      setConnectedApps([]);
-      setToolConfigurations([]);
+      setConnectedApps(nextConnectedApps);
+      setToolConfigurations(nextToolConfigurations);
       setEditAgentApiKey("");
       setActiveSession(null);
       setWorkspaceView("agent-config");
