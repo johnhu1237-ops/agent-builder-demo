@@ -27,7 +27,7 @@ describe("chat prompt materialization", () => {
     });
 
     expect(prompt).toContain("## Enabled Apps");
-    expect(prompt).toContain("- GitHub: Mock repository context for future MCP integration. (configuration-only)");
+    expect(prompt).toContain("- GitHub: GitHub issues through the product MCP gateway. (configuration-only)");
     expect(prompt).toContain("## Enabled Skills");
     expect(prompt).toContain(
       "- Research synthesis: Synthesize findings into a concise report with clear sections and no unsupported claims."

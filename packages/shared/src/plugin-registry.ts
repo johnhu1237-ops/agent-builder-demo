@@ -18,9 +18,9 @@ export type AbilityRegistryItem = RegistryItem & {
 
 export const appRegistry: AppRegistryItem[] = [
   {
-    id: "mock-github",
+    id: "github",
     label: "GitHub",
-    description: "Mock repository context for future MCP integration.",
+    description: "GitHub issues through the product MCP gateway.",
     mode: "configuration-only"
   },
   {

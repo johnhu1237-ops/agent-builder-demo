@@ -34,7 +34,7 @@ Set `ARCADE_API_KEY` in the API environment before starting services. For manual
 ```sql
 update connected_accounts
 set status = 'disconnected'
-where app_id = 'mock-github'
+where app_id in ('github', 'mock-github')
   and account_label in ('E2E Mock GitHub', 'Mock GitHub', 'Demo GitHub');
 ```
 

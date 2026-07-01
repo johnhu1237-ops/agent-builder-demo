@@ -131,7 +131,7 @@ beforeEach(() => {
         id: "tool_config_1",
         agentId: "agent_1",
         connectedAccountId: "connected_account_1",
-        appId: "mock-github",
+        appId: "github",
         toolName: "github_create_issue",
         mode: body.mode ?? "disabled",
         createdAt: new Date().toISOString(),
@@ -153,7 +153,7 @@ beforeEach(() => {
       githubConnected = true;
       return jsonResponse(
         {
-          appId: "mock-github",
+          appId: "github",
           provider: "github",
           label: "GitHub",
           description: "Connect GitHub issues.",
@@ -161,7 +161,7 @@ beforeEach(() => {
           connectedAccount: {
             id: "connected_account_1",
             workspaceId: "workspace_demo",
-            appId: "mock-github",
+            appId: "github",
             accountLabel: "GitHub via Arcade",
             externalAccountId: "demo-user",
             status: "connected",
@@ -173,7 +173,7 @@ beforeEach(() => {
               id: "tool_config_1",
               agentId: "agent_1",
               connectedAccountId: "connected_account_1",
-              appId: "mock-github",
+              appId: "github",
               toolName: "github_create_issue",
               mode: "ask_each_time",
               createdAt: new Date().toISOString(),
@@ -188,7 +188,7 @@ beforeEach(() => {
       if (githubConnected) {
         return jsonResponse([
           {
-            appId: "mock-github",
+            appId: "github",
             provider: "github",
             label: "GitHub",
             description: "Connect GitHub issues.",
@@ -196,7 +196,7 @@ beforeEach(() => {
             connectedAccount: {
               id: "connected_account_1",
               workspaceId: "workspace_demo",
-              appId: "mock-github",
+              appId: "github",
               accountLabel: "GitHub via Arcade",
               externalAccountId: "demo-user",
               status: "connected",
@@ -208,7 +208,7 @@ beforeEach(() => {
                 id: "tool_config_1",
                 agentId: "agent_1",
                 connectedAccountId: "connected_account_1",
-                appId: "mock-github",
+                appId: "github",
                 toolName: "github_create_issue",
                 mode: "ask_each_time",
                 createdAt: new Date().toISOString(),
@@ -220,7 +220,7 @@ beforeEach(() => {
       }
       return jsonResponse([
         {
-          appId: "mock-github",
+          appId: "github",
           provider: "github",
           label: "GitHub",
           description: "Connect GitHub issues.",
@@ -236,7 +236,7 @@ beforeEach(() => {
           id: "tool_config_1",
           agentId: "agent_1",
           connectedAccountId: "connected_account_1",
-          appId: "mock-github",
+          appId: "github",
           toolName: "github_create_issue",
           mode: "ask_each_time",
           createdAt: new Date().toISOString(),
@@ -486,7 +486,7 @@ describe("multi-agent UI", () => {
       if (/\/api\/agents\/[^/]+\/connected-apps$/.test(url) && method === "GET") {
         return jsonResponse([
           {
-            appId: "mock-github",
+            appId: "github",
             provider: "github",
             label: "GitHub",
             description: "Connect GitHub issues.",
@@ -558,7 +558,7 @@ describe("multi-agent UI", () => {
       chatSessionId: "chat_1",
       agentId: "agent_1",
       connectedAccountId: "connected_account_1",
-      provider: "mock-github",
+      provider: "github",
       mcpToolName: "github_create_issue",
       providerToolName: "github_create_issue",
       argsHash: "hash_1",
@@ -958,7 +958,7 @@ describe("multi-agent UI", () => {
       chatSessionId: "chat_1",
       agentId: "agent_1",
       connectedAccountId: "connected_account_1",
-      provider: "mock-github",
+      provider: "github",
       mcpToolName: "github_create_issue",
       providerToolName: "github_create_issue",
       argsHash: "hash_1",

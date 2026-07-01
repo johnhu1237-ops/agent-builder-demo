@@ -8,7 +8,7 @@ export function getArcadeUserId(): string {
 
 export const githubConnectedAppProvider = {
   provider: "github",
-  appId: "mock-github",
+  appId: "github",
   get arcadeUserId() {
     return getArcadeUserId();
   },
