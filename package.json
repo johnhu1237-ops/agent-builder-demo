@@ -11,6 +11,7 @@
     "db:up": "docker start agent-builder-postgres 2>/dev/null || docker run -d --name agent-builder-postgres -p 54329:5432 -e POSTGRES_PASSWORD=agent_builder -e POSTGRES_DB=agent_builder postgres:16",
     "db:down": "docker stop agent-builder-postgres",
     "db:logs": "docker logs -f agent-builder-postgres",
+    "db:reset": "pnpm --filter @agent-builder/api db:reset",
     "build": "pnpm -r build",
     "test": "vitest run",
     "test:watch": "vitest",

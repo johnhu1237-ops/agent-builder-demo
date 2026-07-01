@@ -14,10 +14,17 @@ Railway-ready v0.1 demo for a configurable code-agent builder.
 
 ```bash
 pnpm install
+pnpm db:up
 RUNNER_MODE=fake pnpm dev
 ```
 
 Open http://localhost:5173.
+
+To wipe local app records and return the database to a clean, migrated state:
+
+```bash
+pnpm db:reset
+```
 
 ## Tests
 

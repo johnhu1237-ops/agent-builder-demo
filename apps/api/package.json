@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run src"
+    "test": "vitest run src",
+    "db:reset": "tsx src/reset-database-cli.ts"
   },
   "dependencies": {
     "@agent-builder/shared": "workspace:*",
