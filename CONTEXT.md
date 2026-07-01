@@ -36,6 +36,14 @@ _Avoid_: Thought process, model reasoning.
 The set of external app tools that an **Agent** may use, including whether each tool is available automatically, requires confirmation, or is unavailable. Tool configuration changes affect future **Agent Tasks**, not tasks already running or completed.
 _Avoid_: Plugin settings, connector permissions.
 
+**Tool Definition**:
+A product-approved external app capability that may appear in an **Agent's** **Tool Configuration**. A Tool Definition belongs to a provider and has a stable product-facing name.
+_Avoid_: Raw connector tool, provider method.
+
+**Product Tool Registry**:
+The product-owned catalogue of **Tool Definitions** that may be granted to **Agents**. It defines which external app capabilities are available through Agent Builder, separate from any provider's full tool catalogue.
+_Avoid_: Dynamic provider catalogue, raw tool list.
+
 **Connected Account**:
 A user's authorized connection to an external app account that may be granted to one or more **Agents**. A connected account is distinct from an Agent's **Tool Configuration**, which decides whether and how that Agent can use the account's tools.
 _Avoid_: Agent credential, tool permission.

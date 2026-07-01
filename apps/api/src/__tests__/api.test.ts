@@ -1089,19 +1089,50 @@ describe("API orchestrator", () => {
     expect(externalToolExecutor.executeTool).toHaveBeenCalledWith(
       expect.objectContaining({
         mcpToolName: "github_search_issues",
+        providerToolName: "Github.SearchIssues",
         args: { query: "repo:acme/widgets gateway" }
       })
     );
 
-    const auditRows = await pool.query<{ mcp_tool_name: string; status: string; mode: string | null }>(
-      `select mcp_tool_name, status, mode from tool_call_audit_logs order by created_at asc`
+    const auditRows = await pool.query<{
+      mcp_tool_name: string;
+      provider_tool_name: string | null;
+      status: string;
+      mode: string | null;
+    }>(
+      `select mcp_tool_name, provider_tool_name, status, mode from tool_call_audit_logs order by created_at asc`
     );
     expect(auditRows.rows).toEqual([
-      { mcp_tool_name: "github_search_issues", status: "executed", mode: "auto" },
-      { mcp_tool_name: "github_create_issue", status: "confirmation_required", mode: "ask_each_time" },
-      { mcp_tool_name: "github_create_issue", status: "denied", mode: "ask_each_time" },
-      { mcp_tool_name: "github_create_issue", status: "confirmation_required", mode: "ask_each_time" },
-      { mcp_tool_name: "github_create_issue", status: "timed_out", mode: "ask_each_time" }
+      {
+        mcp_tool_name: "github_search_issues",
+        provider_tool_name: "Github.SearchIssues",
+        status: "executed",
+        mode: "auto"
+      },
+      {
+        mcp_tool_name: "github_create_issue",
+        provider_tool_name: "github_create_issue",
+        status: "confirmation_required",
+        mode: "ask_each_time"
+      },
+      {
+        mcp_tool_name: "github_create_issue",
+        provider_tool_name: "github_create_issue",
+        status: "denied",
+        mode: "ask_each_time"
+      },
+      {
+        mcp_tool_name: "github_create_issue",
+        provider_tool_name: "github_create_issue",
+        status: "confirmation_required",
+        mode: "ask_each_time"
+      },
+      {
+        mcp_tool_name: "github_create_issue",
+        provider_tool_name: "github_create_issue",
+        status: "timed_out",
+        mode: "ask_each_time"
+      }
     ]);
 
     const detailResponse = await request(app)

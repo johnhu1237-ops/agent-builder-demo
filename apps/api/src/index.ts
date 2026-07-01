@@ -34,6 +34,7 @@ import {
   githubConnectedAppProvider,
   type ConnectedAppAuthorizationClient
 } from "./connected-app-authorization";
+import { findProductToolDefinition, toMcpTool } from "./product-tool-registry";
 
 export type ApiDependencies = Partial<RunnerClient> & {
   chatStore?: PgChatStore;
@@ -106,61 +107,17 @@ function mcpToolCallParams(body: unknown): { name: string; args: unknown } | nul
   };
 }
 
-const gatewayToolDefinitions = {
-  github_search_issues: {
-    name: "github_search_issues",
-    description: "Search GitHub issues through the product MCP gateway.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string" }
-      },
-      required: ["query"]
-    }
-  },
-  github_create_issue: {
-    name: "github_create_issue",
-    description: "Create a GitHub issue through the product MCP gateway.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        body: { type: "string" }
-      },
-      required: ["title"]
-    }
-  },
-  slack_post_message: {
-    name: "slack_post_message",
-    description: "Post a Slack message through the product MCP gateway.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        channel: { type: "string" },
-        text: { type: "string" }
-      },
-      required: ["channel", "text"]
-    }
-  },
-  notion_create_page: {
-    name: "notion_create_page",
-    description: "Create a Notion page through the product MCP gateway.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        content: { type: "string" }
-      },
-      required: ["title"]
-    }
-  }
-} as const;
-
 function toolsForToolConfigurations(toolConfigurations: ToolConfiguration[]) {
   return toolConfigurations
     .filter((toolConfiguration) => toolConfiguration.mode !== "disabled")
-    .map((toolConfiguration) => gatewayToolDefinitions[toolConfiguration.toolName as keyof typeof gatewayToolDefinitions])
-    .filter((tool): tool is (typeof gatewayToolDefinitions)[keyof typeof gatewayToolDefinitions] => Boolean(tool));
+    .map((toolConfiguration) =>
+      findProductToolDefinition({
+        connectedAppId: toolConfiguration.appId,
+        mcpToolName: toolConfiguration.toolName
+      })
+    )
+    .filter((toolDefinition): toolDefinition is NonNullable<typeof toolDefinition> => Boolean(toolDefinition))
+    .map(toMcpTool);
 }
 
 function statusFromError(message: string): Exclude<AgentTaskStatus, "pending" | "running" | "completed" | "cancelled"> {
@@ -905,6 +862,28 @@ export function createApiApp(deps: ApiDependencies = {}) {
         return;
       }
 
+      const toolDefinition = findProductToolDefinition({
+        connectedAppId: toolConfiguration.appId,
+        mcpToolName: toolConfiguration.toolName
+      });
+      if (!toolDefinition) {
+        await chatStore.recordToolCallAudit({
+          agentTaskId: lease.agentTaskId,
+          chatSessionId: lease.chatSessionId,
+          agentId: lease.agentId,
+          connectedAccountId: toolConfiguration.connectedAccountId,
+          provider: toolConfiguration.appId,
+          mcpToolName: toolCall.name,
+          providerToolName: null,
+          mode: toolConfiguration.mode,
+          args: toolCall.args,
+          status: "denied",
+          error: "Tool is not mapped in the Product Tool Registry"
+        });
+        res.json(jsonRpcError(id, -32602, "Tool is not available to this Agent Task"));
+        return;
+      }
+
       if (toolConfiguration.mode === "disabled") {
         await chatStore.recordToolCallAudit({
           agentTaskId: lease.agentTaskId,
@@ -913,7 +892,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
           connectedAccountId: toolConfiguration.connectedAccountId,
           provider: toolConfiguration.appId,
           mcpToolName: toolCall.name,
-          providerToolName: toolConfiguration.toolName,
+          providerToolName: toolDefinition.providerToolName,
           mode: toolConfiguration.mode,
           args: toolCall.args,
           status: "denied",
@@ -931,7 +910,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
           connectedAccountId: toolConfiguration.connectedAccountId,
           provider: toolConfiguration.appId,
           mcpToolName: toolCall.name,
-          providerToolName: toolConfiguration.toolName,
+          providerToolName: toolDefinition.providerToolName,
           mode: toolConfiguration.mode,
           args: toolCall.args,
           status: "confirmation_required",
@@ -944,7 +923,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
           connectedAccountId: toolConfiguration.connectedAccountId,
           provider: toolConfiguration.appId,
           mcpToolName: toolCall.name,
-          providerToolName: toolConfiguration.toolName,
+          providerToolName: toolDefinition.providerToolName,
           args: toolCall.args,
           expiresAt: new Date(Date.now() + toolConfirmationTimeoutMs)
         });
@@ -962,7 +941,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
             connectedAccountId: toolConfiguration.connectedAccountId,
             provider: toolConfiguration.appId,
             mcpToolName: toolCall.name,
-            providerToolName: toolConfiguration.toolName,
+            providerToolName: toolDefinition.providerToolName,
             mode: toolConfiguration.mode,
             args: toolCall.args,
             status: resolvedConfirmation.status === "expired" ? "timed_out" : "denied",
@@ -992,7 +971,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
             connectedAccountId: toolConfiguration.connectedAccountId,
             provider: toolConfiguration.appId,
             mcpToolName: toolCall.name,
-            providerToolName: toolConfiguration.toolName,
+            providerToolName: toolDefinition.providerToolName,
             mode: toolConfiguration.mode,
             args: toolCall.args,
             status: "denied",
@@ -1008,7 +987,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
           arcadeUserId: toolConfiguration.externalAccountId,
           provider: toolConfiguration.appId,
           mcpToolName: toolCall.name,
-          providerToolName: toolConfiguration.toolName,
+          providerToolName: toolDefinition.providerToolName,
           args: toolCall.args
         });
         await chatStore.recordToolCallAudit({
@@ -1018,7 +997,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
           connectedAccountId: toolConfiguration.connectedAccountId,
           provider: toolConfiguration.appId,
           mcpToolName: toolCall.name,
-          providerToolName: toolConfiguration.toolName,
+          providerToolName: toolDefinition.providerToolName,
           mode: toolConfiguration.mode,
           args: toolCall.args,
           status: "executed",
@@ -1034,7 +1013,7 @@ export function createApiApp(deps: ApiDependencies = {}) {
           connectedAccountId: toolConfiguration.connectedAccountId,
           provider: toolConfiguration.appId,
           mcpToolName: toolCall.name,
-          providerToolName: toolConfiguration.toolName,
+          providerToolName: toolDefinition.providerToolName,
           mode: toolConfiguration.mode,
           args: toolCall.args,
           status: "failed",

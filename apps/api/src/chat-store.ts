@@ -24,6 +24,7 @@ import {
 } from "@agent-builder/shared";
 import { redactSecrets, redactUnknownJson } from "./redaction";
 import { encryptApiKey } from "./encryption";
+import { listProductToolDefinitionsForConnectedApp } from "./product-tool-registry";
 
 type Queryable = Pool | PoolClient;
 
@@ -225,12 +226,6 @@ export type CreateToolConfirmationInput = {
 
 const terminalTaskStatuses = new Set<AgentTaskStatus>(["completed", "failed", "timed_out", "cancelled"]);
 const toolConfigurationModes = new Set<ToolConfigurationMode>(["auto", "ask_each_time", "disabled"]);
-const seededConnectorTools: Record<string, string[]> = {
-  "github": ["github_search_issues", "github_create_issue"],
-  "mock-slack": ["slack_post_message"],
-  "mock-notion": ["notion_create_page"]
-};
-
 const githubConnectedAppTemplate = {
   appId: "github",
   provider: "github" as const,
@@ -717,7 +712,7 @@ export class PgChatStore {
 
   async createConnectedAccount(input: CreateConnectedAccountInput): Promise<ConnectedAccount> {
     const appId = input.appId.trim();
-    const tools = seededConnectorTools[appId] ?? [];
+    const tools = listProductToolDefinitionsForConnectedApp(appId);
     if (tools.length === 0) {
       throw new Error(`Unknown connected app id: ${appId}`);
     }
@@ -762,7 +757,7 @@ export class PgChatStore {
           [connectedAccount.id, agentId]
         );
 
-        for (const toolName of tools) {
+        for (const toolDefinition of tools) {
           await client.query(
             `
               insert into tool_configurations (
@@ -776,10 +771,17 @@ export class PgChatStore {
                 last_synced_mode,
                 last_synced_at
               )
-              values ($1, $2, $3, $4, $5, 'ask_each_time', 'synced', 'ask_each_time', now())
+              values ($1, $2, $3, $4, $5, $6, 'synced', $6, now())
               on conflict (agent_id, connected_account_id, tool_name) do nothing
             `,
-            [nanoid(), agentId, connectedAccount.id, appId, toolName]
+            [
+              nanoid(),
+              agentId,
+              connectedAccount.id,
+              appId,
+              toolDefinition.mcpToolName,
+              toolDefinition.defaultMode
+            ]
           );
         }
       }
