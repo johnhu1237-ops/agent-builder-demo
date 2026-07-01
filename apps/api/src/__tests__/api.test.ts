@@ -1146,6 +1146,140 @@ describe("API orchestrator", () => {
     ]);
   });
 
+  it("uses the live github_search_issues Tool Configuration mode for each MCP tools/call", async () => {
+    const deferred = createDeferred<RunnerAgentTaskResponse>();
+    const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
+    const externalToolExecutor = {
+      executeTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "Search found issue #38" }]
+      })
+    };
+    const app = createApiApp({ chatStore: store, runAgentTask, externalToolExecutor });
+
+    const agent = await store.createAgent({ apiKey: "sk-test", spec: defaultAgentSpec });
+    await store.createConnectedAccount({
+      workspaceId: "workspace_demo",
+      appId: "github",
+      accountLabel: "GitHub",
+      externalAccountId: "github-user-1",
+      agentIds: [agent.id]
+    });
+    const toolConfigurations = await store.listToolConfigurationsForAgent(agent.id);
+    const searchToolConfiguration = toolConfigurations.find((tool) => tool.toolName === "github_search_issues");
+    expect(searchToolConfiguration).toEqual(
+      expect.objectContaining({
+        toolName: "github_search_issues",
+        mode: "ask_each_time"
+      })
+    );
+
+    const sessionResponse = await request(app)
+      .post("/api/chat-sessions")
+      .send({ agentId: agent.id, title: "Live mode MCP call" })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/chat-sessions/${sessionResponse.body.id}/messages`)
+      .send({ message: "Search GitHub issues." })
+      .expect(202);
+
+    const call = runAgentTask.mock.calls[0]![0];
+    const askEachTimeCall = request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 38,
+        method: "tools/call",
+        params: {
+          name: "github_search_issues",
+          arguments: { query: "repo:johnhu1237-ops/agent-builder-demo issue 38" }
+        }
+      })
+      .then((response) => response);
+
+    const confirmation = await waitForPendingConfirmation(pool);
+    expect(externalToolExecutor.executeTool).not.toHaveBeenCalled();
+    await request(app).post(`/api/tool-confirmations/${confirmation.id}/deny`).expect(200);
+    await expect(askEachTimeCall).resolves.toEqual(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          result: {
+            isError: true,
+            content: [{ type: "text", text: "Tool call denied by user." }]
+          }
+        })
+      })
+    );
+
+    await request(app)
+      .patch(`/api/agents/${agent.id}/tool-configurations/${searchToolConfiguration!.id}`)
+      .send({ mode: "auto" })
+      .expect(200);
+
+    const autoResponse = await request(app)
+      .post("/mcp/agent-task")
+      .set("authorization", `Bearer ${call.agentTaskLeaseToken}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 39,
+        method: "tools/call",
+        params: {
+          name: "github_search_issues",
+          arguments: { query: "repo:johnhu1237-ops/agent-builder-demo issue 38" }
+        }
+      })
+      .expect(200);
+
+    expect(autoResponse.body).toEqual({
+      jsonrpc: "2.0",
+      id: 39,
+      result: {
+        content: [{ type: "text", text: "Search found issue #38" }]
+      }
+    });
+    expect(externalToolExecutor.executeTool).toHaveBeenCalledTimes(1);
+    expect(externalToolExecutor.executeTool).toHaveBeenCalledWith({
+      arcadeUserId: "github-user-1",
+      provider: "github",
+      mcpToolName: "github_search_issues",
+      providerToolName: "Github.SearchIssues",
+      args: { query: "repo:johnhu1237-ops/agent-builder-demo issue 38" }
+    });
+
+    const auditRows = await pool.query<{
+      mcp_tool_name: string;
+      provider_tool_name: string;
+      status: string;
+      mode: string | null;
+    }>(
+      `select mcp_tool_name, provider_tool_name, status, mode from tool_call_audit_logs order by created_at asc`
+    );
+    expect(auditRows.rows).toEqual([
+      {
+        mcp_tool_name: "github_search_issues",
+        provider_tool_name: "Github.SearchIssues",
+        status: "confirmation_required",
+        mode: "ask_each_time"
+      },
+      {
+        mcp_tool_name: "github_search_issues",
+        provider_tool_name: "Github.SearchIssues",
+        status: "denied",
+        mode: "ask_each_time"
+      },
+      {
+        mcp_tool_name: "github_search_issues",
+        provider_tool_name: "Github.SearchIssues",
+        status: "executed",
+        mode: "auto"
+      }
+    ]);
+
+    deferred.resolve(completedRunnerResult);
+    await drainPendingTaskExecutions(app);
+  });
+
   it("executes auto-mode MCP tools/call through the external tool executor and records redacted audit", async () => {
     const deferred = createDeferred<RunnerAgentTaskResponse>();
     const runAgentTask = vi.fn().mockReturnValue(deferred.promise);
