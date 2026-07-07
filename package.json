@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "dotenv -e .env -- pnpm --parallel --filter @agent-builder/api --filter @agent-builder/runner --filter @agent-builder/web dev",
     "dev:api": "dotenv -e .env -- pnpm --filter @agent-builder/api dev",
