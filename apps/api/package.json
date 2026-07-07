@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "tsx dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src",
     "db:reset": "tsx src/reset-database-cli.ts"
