@@ -132,7 +132,7 @@ export function toMcpTool(definition: ProductToolDefinition) {
   };
 }
 
-function valueSchemaToJsonSchema(valueSchema: NonNullable<ProviderToolDefinition["input"]>["parameters"][number]["value_schema"]) {
+function valueSchemaToJsonSchema(valueSchema: NonNullable<NonNullable<ProviderToolDefinition["input"]>["parameters"]>[number]["value_schema"]) {
   const valType = valueSchema?.val_type?.toLowerCase();
   const jsonSchema: Record<string, unknown> = {};
 

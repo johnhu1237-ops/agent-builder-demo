@@ -15,7 +15,10 @@ export function requireRunnerEventAuth(req: Request): boolean {
 }
 
 export function runnerEventEndpoint(): string {
-  const baseUrl = process.env.API_PUBLIC_BASE_URL?.trim() || "http://localhost:4001";
+  const baseUrl =
+    process.env.API_INTERNAL_BASE_URL?.trim() ||
+    process.env.API_PUBLIC_BASE_URL?.trim() ||
+    "http://localhost:4001";
   return `${baseUrl.replace(/\/$/, "")}/internal/runner/task-events`;
 }
 

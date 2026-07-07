@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express from "express";
 import { Pool } from "pg";
@@ -1122,6 +1125,18 @@ export function createApiApp(deps: ApiDependencies = {}) {
     res.status(404).json(stableError("Agent Task Lease not found"));
   });
 
+  const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+  if (fs.existsSync(path.join(webDist, "index.html"))) {
+    app.use(express.static(webDist));
+    app.get("*", (req, res, next) => {
+      if (/^\/(api|internal|mcp|health)(\/|$)/.test(req.path)) {
+        next();
+        return;
+      }
+      res.sendFile(path.join(webDist, "index.html"));
+    });
+  }
+
   return app;
 }
 
@@ -1137,7 +1152,7 @@ async function createProductionApiApp() {
 }
 
 if (process.env.NODE_ENV !== "test") {
-  const port = Number(process.env.API_PORT ?? 4001);
+  const port = Number(process.env.PORT ?? process.env.API_PORT ?? 4001);
   createProductionApiApp()
     .then((app) => {
       app.listen(port, () => {

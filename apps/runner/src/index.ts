@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const port = Number(process.env.RUNNER_PORT ?? 4101);
+const port = Number(process.env.PORT ?? process.env.RUNNER_PORT ?? 4101);
 const runnerMode = process.env.RUNNER_MODE ?? "fake";
 const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? DEFAULT_RUN_TIMEOUT_MS);
 

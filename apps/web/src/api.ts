@@ -9,7 +9,7 @@ import type {
   ToolConfigurationMode
 } from "@agent-builder/shared";
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4001";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 export type ToolConfiguration = SharedToolConfiguration;
 export type { ConnectedAppState, ToolConfigurationMode };
