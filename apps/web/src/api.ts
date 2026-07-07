@@ -165,5 +165,6 @@ export async function sendChatMessage(input: {
 }
 
 export function createTaskEventSource(eventsUrl: string): EventSource {
-  return new EventSource(new URL(eventsUrl, BASE_URL).toString());
+  const base = BASE_URL || window.location.origin;
+  return new EventSource(new URL(eventsUrl, base).toString());
 }
